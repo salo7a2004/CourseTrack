@@ -55,7 +55,7 @@ window.APP_CONFIG = {
   // Both requests hit the same Google Apps Script Web App URL — see
   // google-apps-script.gs and SETUP.md for the one-time setup.
   sheetsApi: {
-    endpoint: "https://script.google.com/macros/s/AKfycbz_7GJPPFj867kKnldLJZ22vqk7uJ2YE3pvEHT5OXqy_8Zaf0HkYljpVmB-GG3kcsA2/exec"
+    endpoint: "https://script.google.com/macros/s/AKfycbz_7GJPPFj867kKnldLJZ22vqk7uJ2YE3pvEHT5OXqy_8Zaf0HkYljpVmB-GG3kcsA2/exec",
     adminToken: "SolidWorks2026@9DENGX"
 }
 };
