@@ -3,21 +3,19 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CourseTrack | Engineering Course Portal</title>
-  <meta name="description" content="Track your academic progress: meetings, tasks and final results, instantly." />
+  <title>CourseTrack | Student Portal</title>
+  <meta name="description" content="Search your student code to view your weekly results and final course result." />
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
-  <!-- SheetJS (xlsx parsing) -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-
   <link rel="stylesheet" href="style.css" />
+  <!-- Note: SheetJS is intentionally NOT loaded here — the Student Portal
+       never touches a raw .xlsx file, only the live Google Sheets data. -->
 </head>
 <body>
 
-  <!-- ======================= LOADING SCREEN ======================= -->
   <div id="loading-screen" class="loading-screen" aria-live="polite">
     <div class="loader-orbit">
       <span class="loader-core"></span>
@@ -27,13 +25,10 @@
     <p class="loader-text">Preparing your portal…</p>
   </div>
 
-  <!-- ======================= APP SHELL ======================= -->
   <div class="app-shell">
 
     <!-- ---------------- HEADER ---------------- -->
     <header class="app-header">
-
-      <!-- LEFT: Course logo + course name -->
       <div class="header-brand">
         <div class="brand-logo" id="course-logo-wrap" aria-hidden="true">
           <img id="course-logo-img" class="brand-logo__img" alt="" hidden />
@@ -41,35 +36,15 @@
         </div>
         <div class="brand-text">
           <h1 id="header-course-name">CourseTrack</h1>
-          <span>Engineering Course Portal</span>
+          <span id="header-course-subtitle">Student Portal</span>
         </div>
       </div>
 
-      <!-- CENTER: Portal title + tab navigation -->
-      <div class="header-center">
-        <div class="header-center__title">
-          <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1.7 2.7 3 6 3s6-1.3 6-3v-5"/></svg>
-          <span>Student Portal</span>
-        </div>
-
-        <nav class="view-switch" role="tablist" aria-label="Main navigation">
-          <button class="view-switch__btn is-active" data-view="student" role="tab" aria-selected="true">
-            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20c0-3.3 3.6-6 8-6s8 2.7 8 6"/><circle cx="12" cy="8" r="4"/></svg>
-            <span>Student Portal</span>
-          </button>
-          <button class="view-switch__btn" data-view="upload" role="tab" aria-selected="false">
-            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0-12l-4.5 4.5M12 3l4.5 4.5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
-            <span>Instructor Upload</span>
-          </button>
-        </nav>
-      </div>
-
-      <!-- RIGHT: Organization branding + theme toggle -->
       <div class="header-orgs">
         <div class="org-chip">
           <span class="org-chip__caption">Officially Managed by</span>
           <div class="org-chip__body">
-            <span class="org-logo-badge" id="org-badge-primary">
+            <span class="org-logo-badge">
               <img id="org-logo-primary" alt="Primary organization logo" hidden />
               <span id="org-placeholder-primary" class="org-logo-badge__placeholder">9D</span>
             </span>
@@ -80,7 +55,7 @@
         <div class="org-chip">
           <span class="org-chip__caption">In Collaboration With</span>
           <div class="org-chip__body">
-            <span class="org-logo-badge" id="org-badge-partner">
+            <span class="org-logo-badge">
               <img id="org-logo-partner" alt="Partner organization logo" hidden />
               <span id="org-placeholder-partner" class="org-logo-badge__placeholder">EX</span>
             </span>
@@ -103,189 +78,98 @@
     <!-- ---------------- MAIN ---------------- -->
     <main class="app-main">
 
-      <!-- ======================= STUDENT VIEW ======================= -->
-      <section id="student-view" class="view-panel is-active" aria-labelledby="student-view-title">
+      <div class="search-card glass-card">
+        <h2 class="search-card__title">Check your results</h2>
+        <p class="search-card__subtitle">Enter your student code to view your profile, weekly results and final course result.</p>
 
-        <div class="search-card glass-card">
-          <h2 id="student-view-title" class="search-card__title">Check your academic progress</h2>
-          <p class="search-card__subtitle">Enter your student code to view your profile, course progress and results.</p>
-
-          <form id="search-form" class="search-form" autocomplete="off">
-            <div class="search-input-wrap">
-              <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" class="search-input-icon"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-              <input id="student-code-input" type="text" placeholder="e.g. STU-2045" aria-label="Student code" dir="auto" required />
-            </div>
-            <button type="submit" class="btn btn--primary" id="search-btn">
-              <span class="btn-label">Search</span>
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-            </button>
-          </form>
-
-          <p class="no-data-hint" id="no-data-hint">No course data yet — ask your instructor to upload the sheet, or switch to <strong>Instructor Upload</strong>.</p>
-        </div>
-
-        <!-- Lightweight search indicator -->
-        <div id="search-loading" class="search-loading" hidden>
-          <span class="mini-spinner" aria-hidden="true"></span>
-          <span>Searching student records…</span>
-        </div>
-
-        <!-- Error state -->
-        <div id="error-state" class="state-card error-card" hidden>
-          <div class="error-icon-wrap">
-            <svg viewBox="0 0 24 24" width="46" height="46" fill="none" stroke="currentColor" stroke-width="2.2">
-              <circle cx="12" cy="12" r="10" class="error-circle"/>
-              <path d="M15 9l-6 6M9 9l6 6" class="error-cross"/>
-            </svg>
+        <form id="search-form" class="search-form" autocomplete="off">
+          <div class="search-input-wrap">
+            <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" class="search-input-icon"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            <input id="student-code-input" type="text" placeholder="e.g. STU-2045" aria-label="Student code" dir="auto" required />
           </div>
-          <h3 id="error-title">❌ Student Code Not Found</h3>
-          <p id="error-message">We couldn't match that code to any record in the uploaded sheet. Double-check it and try again.</p>
+          <button type="submit" class="btn btn--primary" id="search-btn">
+            <span class="btn-label">Search</span>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+          </button>
+        </form>
+
+        <p class="no-data-hint" id="no-data-hint">Results are fetched live — search your code any time to see the latest data.</p>
+      </div>
+
+      <!-- Loading indicator: hidden by default, shown only while a search
+           is in flight. The [hidden] CSS fix guarantees this never gets
+           stuck visible before, during, or after a search. -->
+      <div id="search-loading" class="search-loading" hidden>
+        <span class="mini-spinner" aria-hidden="true"></span>
+        <span>Searching student records…</span>
+      </div>
+
+      <div id="error-state" class="state-card error-card" hidden>
+        <div class="error-icon-wrap">
+          <svg viewBox="0 0 24 24" width="46" height="46" fill="none" stroke="currentColor" stroke-width="2.2">
+            <circle cx="12" cy="12" r="10" class="error-circle"/>
+            <path d="M15 9l-6 6M9 9l6 6" class="error-cross"/>
+          </svg>
         </div>
+        <h3 id="error-title">❌ Student Code Not Found</h3>
+        <p id="error-message">We couldn't match that code to any record. Double-check it and try again.</p>
+      </div>
 
-        <!-- Results -->
-        <div id="results" class="results" hidden>
+      <div id="results" class="results" hidden>
 
-          <!-- ---------- STUDENT PROFILE ---------- -->
-          <div class="section-block">
-            <h3 class="section-title">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10.5" r="2.2"/><path d="M6 16.2c.6-1.6 2-2.5 3.6-2.5s3 .9 3.6 2.5M14.5 9h4M14.5 12h4"/></svg>
-              Student Profile
-            </h3>
-
-            <div class="glass-card profile-card">
-              <div class="avatar" id="student-avatar" aria-hidden="true">
-                <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-3.6 3.6-6.5 8-6.5s8 2.9 8 6.5"/></svg>
-              </div>
-
-              <div class="profile-info">
-                <span class="profile-eyebrow">Student Name</span>
-                <h3 id="student-name" dir="auto">—</h3>
-
-                <div class="profile-meta">
-                  <div class="profile-meta__item">
-                    <span class="profile-meta__label">Student Code</span>
-                    <span class="profile-meta__value" id="student-code-display" dir="auto">—</span>
-                  </div>
-                  <div class="profile-meta__item" id="student-email-wrap" hidden>
-                    <span class="profile-meta__label">Email Address</span>
-                    <span class="profile-meta__value profile-meta__value--email" id="student-email" dir="auto">—</span>
-                  </div>
-                </div>
-              </div>
-
-              <div class="profile-badge success-pop" id="found-badge">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 13l4 4L19 7"/></svg>
-                Record found
-              </div>
-            </div>
-          </div>
-
-          <!-- ---------- COURSE PROGRESS (Weeks) ---------- -->
-          <div class="section-block" id="timeline-section" hidden>
-            <h3 class="section-title">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 2v4M16 2v4M3 9h18M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></svg>
-              Course Progress
-            </h3>
-            <div id="timeline" class="timeline"></div>
-          </div>
-
-          <!-- ---------- COURSE SUMMARY (Final results) ---------- -->
-          <div class="section-block" id="final-section" hidden>
-            <h3 class="section-title">
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM8.5 14.5L7 22l5-3 5 3-1.5-7.5"/></svg>
-              Course Summary
-            </h3>
-            <div id="final-results" class="final-grid"></div>
-          </div>
-
-        </div>
-      </section>
-
-      <!-- ======================= UPLOAD VIEW ======================= -->
-      <section id="upload-view" class="view-panel" aria-labelledby="upload-view-title">
-
-        <!-- ---------- COURSE INFORMATION ---------- -->
-        <div class="glass-card course-info-card">
-          <h3 class="section-title course-info-card__title">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-            Course Information
+        <div class="section-block">
+          <h3 class="section-title">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10.5" r="2.2"/><path d="M6 16.2c.6-1.6 2-2.5 3.6-2.5s3 .9 3.6 2.5M14.5 9h4M14.5 12h4"/></svg>
+            Student Profile
           </h3>
 
-          <div class="course-info-grid">
-            <div class="course-info-field">
-              <span class="course-info-field__label">Course Name</span>
-              <span class="course-info-field__value course-info-field__value--editable" id="course-name" contenteditable="true" spellcheck="false" dir="auto"></span>
-            </div>
-            <div class="course-info-field">
-              <span class="course-info-field__label">Instructor Name</span>
-              <span class="course-info-field__value course-info-field__value--editable" id="instructor-name" contenteditable="true" spellcheck="false" dir="auto"></span>
-            </div>
-            <div class="course-info-field">
-              <span class="course-info-field__label">Current Version</span>
-              <span class="course-info-field__value" id="course-info-version">—</span>
-            </div>
-            <div class="course-info-field">
-              <span class="course-info-field__label">Current Excel File</span>
-              <span class="course-info-field__value" id="course-info-file" dir="auto">No file uploaded yet</span>
-            </div>
-            <div class="course-info-field">
-              <span class="course-info-field__label">Number of Students</span>
-              <span class="course-info-field__value" id="course-info-students">0</span>
-            </div>
-            <div class="course-info-field">
-              <span class="course-info-field__label">Last Updated</span>
-              <span class="course-info-field__value" id="course-info-updated">—</span>
-            </div>
-          </div>
-          <p class="course-info-hint">Click Course Name or Instructor Name to edit — changes are saved automatically.</p>
-        </div>
-
-        <!-- ---------- UPLOAD CARD (dropzone <-> summary) ---------- -->
-        <div class="glass-card upload-card">
-          <h2 class="search-card__title">Course Sheet</h2>
-          <p class="search-card__subtitle">Upload the <strong>.xlsx</strong> file containing student codes, meetings, tasks and final results.</p>
-
-          <!-- Dropzone state -->
-          <div id="upload-dropzone-state">
-            <label for="file-input" id="dropzone" class="dropzone">
-              <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3v12m0-12l-5 5m5-5l5 5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
-              <span class="dropzone-title">Drag &amp; drop your .xlsx file here</span>
-              <span class="dropzone-sub">or click to browse</span>
-              <input type="file" id="file-input" accept=".xlsx" hidden />
-            </label>
-
-            <div class="progress-wrap" id="progress-wrap" hidden>
-              <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
-              <span class="progress-label" id="progress-label">Reading file… 0%</span>
+          <div class="glass-card profile-card">
+            <div class="avatar" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-3.6 3.6-6.5 8-6.5s8 2.9 8 6.5"/></svg>
             </div>
 
-            <div class="upload-error" id="upload-error" hidden>
-              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><path d="M12 8v5M12 16h.01"/></svg>
-              <span id="upload-error-text">Something went wrong reading this file.</span>
+            <div class="profile-info">
+              <span class="profile-eyebrow">Student Name</span>
+              <h3 id="student-name" dir="auto">—</h3>
+
+              <div class="profile-meta">
+                <div class="profile-meta__item">
+                  <span class="profile-meta__label">Student Code</span>
+                  <span class="profile-meta__value" id="student-code-display" dir="auto">—</span>
+                </div>
+                <div class="profile-meta__item" id="student-email-wrap" hidden>
+                  <span class="profile-meta__label">Email Address</span>
+                  <span class="profile-meta__value profile-meta__value--email" id="student-email" dir="auto">—</span>
+                </div>
+              </div>
             </div>
-          </div>
 
-          <!-- Summary state (replaces the dropzone once a file is loaded) -->
-          <div id="upload-summary-state" hidden>
-            <div class="upload-summary__status">
-              <span class="status-dot" id="upload-status-dot"></span>
-              <span id="upload-status-text">Active</span>
+            <div class="profile-badge success-pop">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 13l4 4L19 7"/></svg>
+              Record found
             </div>
-
-            <div class="upload-summary-grid" id="upload-summary-grid"></div>
-
-            <button type="button" class="btn btn--ghost" id="replace-file-btn">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4v6h6M20 20v-6h-6"/><path d="M20 10a8 8 0 0 0-14.9-3M4 14a8 8 0 0 0 14.9 3"/></svg>
-              Replace File
-            </button>
           </div>
         </div>
 
-      </section>
+        <div class="section-block" id="timeline-section" hidden>
+          <h3 class="section-title">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 2v4M16 2v4M3 9h18M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></svg>
+            Weekly Results
+          </h3>
+          <div id="timeline" class="timeline"></div>
+        </div>
 
+        <div class="section-block" id="final-section" hidden>
+          <h3 class="section-title">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM8.5 14.5L7 22l5-3 5 3-1.5-7.5"/></svg>
+            Final Result
+          </h3>
+          <div id="final-results" class="final-grid"></div>
+        </div>
+
+      </div>
     </main>
 
-    <!-- ---------------- FOOTER ---------------- -->
     <footer class="app-footer">
       <p id="footer-powered">Powered by 9D</p>
       <p id="footer-collab">In Collaboration With ENGX</p>
@@ -294,8 +178,7 @@
 
   </div>
 
-  <!-- Configuration must load before the app logic that reads it -->
   <script src="config.js"></script>
-  <script src="script.js"></script>
+  <script src="student.js"></script>
 </body>
 </html>

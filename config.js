@@ -1,36 +1,25 @@
 /* =====================================================================
    COURSETRACK — SITE CONFIGURATION
    -----------------------------------------------------------------------
-   Everything an instructor/administrator needs to rebrand this portal
-   lives in this ONE object. Change values here — never inside
-   index.html, style.css or script.js — to update:
-     • Course name / instructor name (default values; editable in-app too)
-     • Primary & partner organization names, taglines and logos
-     • Primary / secondary brand colors
-     • Default theme (light or dark)
-     • Footer text
-     • App version shown in the Course Information card
-
-   To replace a logo later, either:
-     a) point the path below at a new image file, or
-     b) overwrite the existing file at that same path.
-   No HTML or JavaScript changes are required either way.
+   The ONE file to edit for branding and data-source settings. Neither
+   index.html, admin.html, style.css, student.js nor admin.js should ever
+   need to change when you rebrand the portal or point it at a new
+   Google Sheet — everything flows from here.
    ===================================================================== */
 
 window.APP_CONFIG = {
-  // ---- Identity -------------------------------------------------------
+  // ---- Identity (shown to students; NOT editable from either page) ----
   courseName: 'Engineering Fundamentals Program',
+  courseSubtitle: 'Student Portal',
   instructorName: 'Add instructor name',
-  appVersion: 'v3.0.0',
+  appVersion: 'v5.0.0',
 
   // ---- Theme ------------------------------------------------------------
-  // 'light' or 'dark'. Light Mode is the required default; visitors can
-  // still switch to Dark Mode and their choice is remembered.
+  // Light Mode is always the default regardless of this value or the
+  // visitor's OS setting; Dark Mode remains available via the toggle.
   theme: 'light',
 
   // ---- Brand colors -----------------------------------------------------
-  // Applied at runtime as CSS custom properties — change these two lines
-  // to re-theme the entire interface.
   colors: {
     primary: '#2F54EB',   // Royal Blue
     secondary: '#8FC7FF', // Baby Blue
@@ -38,7 +27,8 @@ window.APP_CONFIG = {
 
   // ---- Logos --------------------------------------------------------
   // Set `course` to a file path (e.g. 'assets/course-logo.png') to replace
-  // the built-in mark. Leave it null to keep the default vector logo.
+  // the default letter badge. Leave any of these null/empty and a clean
+  // text placeholder is shown instead — never a broken image icon.
   logos: {
     course: null,
     primaryOrg: 'assets/logo-9d.png',
@@ -57,4 +47,15 @@ window.APP_CONFIG = {
     collaboration: 'In Collaboration With ENGX',
     developedBy: 'Developed by Salah Hossam',
   },
+
+  // ---- Google Sheets bridge -----------------------------------------------
+  // This is what makes Google Sheets the single source of truth:
+  //   • student.js sends GET requests here to read the live data.
+  //   • admin.js sends POST requests here to overwrite it after an upload.
+  // Both requests hit the same Google Apps Script Web App URL — see
+  // google-apps-script.gs and SETUP.md for the one-time setup.
+  sheetsApi: {
+    endpoint: "https://script.google.com/macros/s/AKfycbz_7GJPPFj867kKnldLJZ22vqk7uJ2YE3pvEHT5OXqy_8Zaf0HkYljpVmB-GG3kcsA2/exec"
+    adminToken: "SolidWorks2026@9DENGX"
+}
 };
