@@ -48,14 +48,16 @@ window.APP_CONFIG = {
     developedBy: 'Developed by Salah Hossam',
   },
 
-  // ---- Google Sheets bridge -----------------------------------------------
+// ---- Google Sheets bridge -----------------------------------------------
   // This is what makes Google Sheets the single source of truth:
   //   • student.js sends GET requests here to read the live data.
   //   • admin.js sends POST requests here to overwrite it after an upload.
   // Both requests hit the same Google Apps Script Web App URL — see
   // google-apps-script.gs and SETUP.md for the one-time setup.
   sheetsApi: {
-    endpoint: "https://script.google.com/macros/s/AKfycbz_7GJPPFj867kKnldLJZ22vqk7uJ2YE3pvEHT5OXqy_8Zaf0HkYljpVmB-GG3kcsA2/exec",
-    adminToken: "SolidWorks2026@9DENGX"
-}
+    endpoint: 'https://script.google.com/macros/s/AKfycbwqFY2dDdLsbcMrBlHBcf2oIIBuimT1YZ7DbnDqSRnf30r-7e-Kx4F5SxKQQgdnVhuduA/exec',
+    // Must exactly match ADMIN_TOKEN inside google-apps-script.gs.
+    // Only used by admin.html — never sent or exposed to students.
+    adminToken: 'MyNewSecretToken2026',
+  },
 };

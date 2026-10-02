@@ -178,7 +178,18 @@
           if (!rows.length) { reject(new Error(`The sheet "${sheetName}" is empty — add student rows and try again.`)); return; }
 
           const headers = rows[0].map((h) => String(h));
-          const dataRows = rows.slice(1);
+
+          // Google Sheets' setValues() requires every row to have EXACTLY
+          // headers.length columns, or the write fails outright. A raw
+          // .xlsx can occasionally have a stray value in a column past the
+          // header row's last column (or a short row) — pad/truncate every
+          // row here so the payload sent to Apps Script is always
+          // rectangular, regardless of what the source file looked like.
+          const dataRows = rows.slice(1).map((row) => {
+            const normalized = row.slice(0, headers.length);
+            while (normalized.length < headers.length) normalized.push('');
+            return normalized;
+          });
 
           if (!headers.some((h) => /code/i.test(h.trim()))) {
             reject(new Error(ERRORS.CODE_NOT_FOUND));

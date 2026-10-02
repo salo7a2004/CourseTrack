@@ -40,7 +40,7 @@
  */
 
 const SHEET_NAME = 'CourseData';
-const ADMIN_TOKEN = 'SolidWorks2026@9DENGX';
+const ADMIN_TOKEN = 'REPLACE_WITH_YOUR_OWN_SECRET_TOKEN';
 
 /** Reads the current data. Called by the Student Portal on every search. */
 function doGet(e) {
@@ -73,10 +73,19 @@ function doPost(e) {
       return jsonResponse_({ success: false, error: 'No headers supplied — nothing to write.' });
     }
 
+    // Defense in depth: admin.js already sends rectangular rows, but
+    // normalize again here so a malformed payload from any client can
+    // never crash setValues() with a "range width" error.
+    const normalizedRows = rows.map((row) => {
+      const copy = row.slice(0, headers.length);
+      while (copy.length < headers.length) copy.push('');
+      return copy;
+    });
+
     const sheet = getOrCreateSheet_();
     sheet.clearContents();
 
-    const grid = [headers, ...rows];
+    const grid = [headers, ...normalizedRows];
     sheet.getRange(1, 1, grid.length, headers.length).setValues(grid);
 
     const now = new Date().toISOString();
