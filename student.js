@@ -410,19 +410,31 @@
      8. FINAL RESULT (Course Summary)
      ===================================================================== */
 
+  /**
+   * Renders one tile per "final" column — but only for columns THIS
+   * student actually has a value in. A column that exists in the sheet
+   * (e.g. the admin uploaded a file with "Rank" or "Final Score" headers
+   * already in place for a future release) but is still blank for this
+   * student is skipped entirely rather than shown as an empty "—" tile.
+   * The section itself is hidden only if literally nothing rendered.
+   *
+   * This is what lets ANY uploaded sheet — a lean weekly file, a
+   * rankings-only file, or a wide file with lots of not-yet-filled
+   * columns — render cleanly without code changes: the column set is
+   * never hardcoded, and emptiness is judged per student, per field,
+   * at render time.
+   */
   function renderFinalResults(columns, student) {
-    const { final } = columns;
-    if (!final.length) {
-      dom.finalSection.hidden = true;
-      dom.finalResults.innerHTML = '';
-      return;
-    }
     dom.finalResults.innerHTML = '';
-    final.forEach((key, index) => {
+    let visibleCount = 0;
+
+    columns.final.forEach((key) => {
       const value = student.raw[key];
+      if (isEmptyCell(value)) return; // nothing to show yet for this student — skip, don't pad with "—"
+
       const el = document.createElement('div');
       el.className = 'final-item';
-      el.style.animationDelay = `${Math.min(index * 70, 700)}ms`;
+      el.style.animationDelay = `${Math.min(visibleCount * 70, 700)}ms`;
 
       const label = document.createElement('div');
       label.className = 'final-item__label';
@@ -435,8 +447,10 @@
       el.appendChild(label);
       el.appendChild(valueEl);
       dom.finalResults.appendChild(el);
+      visibleCount += 1;
     });
-    dom.finalSection.hidden = false;
+
+    dom.finalSection.hidden = visibleCount === 0;
   }
 
   /* =====================================================================
