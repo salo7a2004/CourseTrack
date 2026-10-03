@@ -11,11 +11,10 @@
 
   const CONFIG = window.APP_CONFIG || {};
 
-  const PREFERRED_SHEET_NAME = 'form responses 1';
   const ERRORS = {
     UNSUPPORTED_FILE: 'Unsupported file.',
     INVALID_EXCEL: 'Invalid Excel file.',
-    SHEET_NOT_FOUND: 'Sheet "Form Responses 1" not found.',
+    SHEET_NOT_FOUND: 'No worksheet with actual student Code values was found in this workbook.',
     CODE_NOT_FOUND: 'Code column not found.',
   };
 
@@ -139,19 +138,79 @@
      touches a raw .xlsx file)
      ===================================================================== */
 
-  function findSheetWithCodeColumn(workbook) {
-    return workbook.SheetNames.find((name) => {
-      const headerRow = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, range: 0 })[0] || [];
-      return headerRow.some((cell) => /code/i.test(String(cell)));
-    });
+  // How many leading rows to scan, per sheet, looking for the real
+  // header row. Generous enough to clear a title block + stat summary
+  // (e.g. "Executive Performance Summary" has its header at row 8) but
+  // bounded so a sheet with no header at all fails fast.
+  const MAX_HEADER_SCAN_ROWS = 25;
+
+  /**
+   * Scans a single sheet's leading rows for the one that is actually a
+   * header row — identified by containing a cell whose text matches
+   * "code" (the one column every CourseTrack sheet must have). Returns
+   * the row's 0-based index plus which column matched, within SheetJS's
+   * `header:1` grid — or null if no such row exists in this sheet at
+   * all. This is what lets a sheet ship with any number of title/report
+   * rows above the real table, from 0 (data starts at row 1) upward.
+   */
+  function findHeaderRow(sheet) {
+    const grid = XLSX.utils.sheet_to_json(sheet, { header: 1, range: 0, blankrows: false });
+    const limit = Math.min(grid.length, MAX_HEADER_SCAN_ROWS);
+    for (let i = 0; i < limit; i++) {
+      const row = grid[i] || [];
+      const codeColIndex = row.findIndex((cell) => /code/i.test(String(cell == null ? '' : cell).trim()));
+      if (codeColIndex !== -1) {
+        return { grid, rowIndex: i, codeColIndex };
+      }
+    }
+    return null;
   }
 
-  function pickSheetName(workbook) {
-    const preferred = workbook.SheetNames.find((name) => name.trim().toLowerCase() === PREFERRED_SHEET_NAME);
-    if (preferred) return preferred;
-    const fallback = findSheetWithCodeColumn(workbook);
-    if (fallback) return fallback;
-    throw new Error(ERRORS.SHEET_NOT_FOUND);
+  /**
+   * Picks which sheet to read. No sheet name is ever hardcoded —
+   * "Form Responses 1", "Sheet1", "Executive Performance Summary",
+   * anything goes.
+   *
+   * IMPORTANT: this deliberately does NOT stop at the first sheet with
+   * a Code-like header. A raw Google Form export tab often has its own
+   * "Code" column that is almost entirely empty (only a stray row or
+   * two filled in), while the real, complete gradebook sits in a later
+   * tab. Stopping at the first match would silently ingest that mostly
+   * empty sheet instead — which is exactly what produced "0 students /
+   * 0 weeks / 0 tasks" on the Statistics dashboard before this fix: the
+   * wrong sheet was selected, so the week/task/notes detectors (which
+   * were never broken) correctly found nothing to detect.
+   *
+   * Instead, every sheet with a Code-like header is scored by how many
+   * rows under it actually have a non-empty Code value, and the
+   * highest-scoring sheet wins. The sheet with real student records —
+   * whatever it's named, wherever it sits in the tab order — is the
+   * one that gets used.
+   */
+  function pickSheet(workbook) {
+    let best = null;
+
+    for (const name of workbook.SheetNames) {
+      const found = findHeaderRow(workbook.Sheets[name]);
+      if (!found) continue;
+
+      const { grid, rowIndex, codeColIndex } = found;
+      let validRecordCount = 0;
+      for (let r = rowIndex + 1; r < grid.length; r++) {
+        const value = (grid[r] || [])[codeColIndex];
+        if (value !== undefined && value !== null && String(value).trim() !== '') validRecordCount++;
+      }
+
+      if (!best || validRecordCount > best.validRecordCount) {
+        best = { sheetName: name, headerRowIndex: rowIndex, validRecordCount };
+      }
+    }
+
+    if (!best || best.validRecordCount === 0) {
+      throw new Error(ERRORS.SHEET_NOT_FOUND);
+    }
+
+    return { sheetName: best.sheetName, headerRowIndex: best.headerRowIndex };
   }
 
   function parseExcelFile(file) {
@@ -173,11 +232,15 @@
         if (!workbook.SheetNames.length) { reject(new Error(ERRORS.INVALID_EXCEL)); return; }
 
         try {
-          const sheetName = pickSheetName(workbook);
+          const { sheetName, headerRowIndex } = pickSheet(workbook);
           const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '', header: 1 });
           if (!rows.length) { reject(new Error(`The sheet "${sheetName}" is empty — add student rows and try again.`)); return; }
 
-          const headers = rows[0].map((h) => String(h));
+          // Header row is wherever pickSheet actually found it — not
+          // assumed to be row 1 — so any report/title rows above it
+          // (merged banners, stat summaries, blank spacer rows) are
+          // simply skipped rather than misread as data.
+          const headers = rows[headerRowIndex].map((h) => String(h == null ? '' : h).trim());
 
           // Google Sheets' setValues() requires every row to have EXACTLY
           // headers.length columns, or the write fails outright. A raw
@@ -185,7 +248,7 @@
           // header row's last column (or a short row) — pad/truncate every
           // row here so the payload sent to Apps Script is always
           // rectangular, regardless of what the source file looked like.
-          const dataRows = rows.slice(1).map((row) => {
+          const dataRows = rows.slice(headerRowIndex + 1).map((row) => {
             const normalized = row.slice(0, headers.length);
             while (normalized.length < headers.length) normalized.push('');
             return normalized;
@@ -226,7 +289,11 @@
     }).length;
   }
   function countNotes(headers) {
-    return headers.filter((h) => /^notes?\s*\d/i.test(String(h).trim())).length;
+    // Counts both a general "Notes" column and week-specific ones
+    // ("Notes5", "Notes 5", ...) so the Statistics tile reflects
+    // whatever the uploaded sheet actually has, instead of only
+    // numbered Notes columns.
+    return headers.filter((h) => /^notes?(\s*\d+)?\s*$/i.test(String(h).trim())).length;
   }
 
   /* =====================================================================
