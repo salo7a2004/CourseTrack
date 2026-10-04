@@ -93,6 +93,13 @@
           </button>
         </form>
 
+        <!-- FEATURE: Remember My Code (localStorage) — purely additive,
+             does not touch #search-form or any existing element. -->
+        <label class="remember-code-row" for="remember-code-checkbox">
+          <input type="checkbox" id="remember-code-checkbox" />
+          <span>Remember my code on this device</span>
+        </label>
+
         <p class="no-data-hint" id="no-data-hint">Results are fetched live — search your code any time to see the latest data.</p>
       </div>
 
@@ -116,6 +123,17 @@
       </div>
 
       <div id="results" class="results" hidden>
+
+        <!-- FEATURE: Download Report Card (PDF) — toolbar lives inside
+             #results so it naturally shows/hides with the results
+             themselves; it is excluded from the PDF output itself via
+             the .pdf-export-mode CSS rule in style.css. -->
+        <div class="results-toolbar">
+          <button type="button" class="btn btn--ghost" id="download-pdf-btn">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0-12l-5 5m5-5l5 5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+            Download Report Card (PDF)
+          </button>
+        </div>
 
         <div class="section-block">
           <h3 class="section-title">
@@ -177,6 +195,10 @@
     </footer>
 
   </div>
+
+  <!-- FEATURE: Download Report Card (PDF) — lightweight client-side
+       PDF export, no backend involved. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 
   <script src="config.js"></script>
   <script src="student.js"></script>

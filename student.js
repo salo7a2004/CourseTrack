@@ -82,6 +82,10 @@
     timeline: document.getElementById('timeline'),
     finalSection: document.getElementById('final-section'),
     finalResults: document.getElementById('final-results'),
+
+    // NEW FEATURE refs — additive only
+    rememberCheckbox: document.getElementById('remember-code-checkbox'),
+    downloadPdfBtn: document.getElementById('download-pdf-btn'),
   };
 
   /* =====================================================================
@@ -486,6 +490,11 @@
     const code = dom.codeInput.value.trim();
     if (!code) return;
 
+    // NEW LINE (Remember My Code): save/refresh the stored code on every
+    // search while the checkbox is checked. Everything else in this
+    // function is unchanged.
+    if (dom.rememberCheckbox && dom.rememberCheckbox.checked) saveRememberedCode(code);
+
     dom.searchBtn.classList.add('is-loading');
     dom.searchBtn.disabled = true;
     setViewState({ loading: true });
@@ -527,6 +536,90 @@
   }
 
   /* =====================================================================
+     NEW FEATURE 1: "Remember My Code"
+     Stores the student's code in localStorage (separate key from the
+     existing theme storage, so nothing else is affected) and refills it
+     automatically on the next visit. Purely additive: no existing
+     function signature changes, only one new line was added inside
+     handleSearch above.
+     ===================================================================== */
+
+  const REMEMBER_CODE_KEY = 'coursetrack_remembered_code';
+
+  function saveRememberedCode(code) {
+    try { localStorage.setItem(REMEMBER_CODE_KEY, code); } catch (err) { /* non-fatal: localStorage may be unavailable */ }
+  }
+
+  function clearRememberedCode() {
+    try { localStorage.removeItem(REMEMBER_CODE_KEY); } catch (err) { /* non-fatal */ }
+  }
+
+  function initRememberCode() {
+    if (!dom.rememberCheckbox) return; // safe no-op if the checkbox isn't on the page
+
+    let saved = null;
+    try { saved = localStorage.getItem(REMEMBER_CODE_KEY); } catch (err) { /* non-fatal */ }
+
+    if (saved) {
+      dom.codeInput.value = saved;
+      dom.rememberCheckbox.checked = true;
+    }
+
+    // Unchecking the box forgets the code immediately, rather than
+    // waiting for the next search.
+    dom.rememberCheckbox.addEventListener('change', () => {
+      if (!dom.rememberCheckbox.checked) clearRememberedCode();
+    });
+  }
+
+  /* =====================================================================
+     NEW FEATURE 2: "Download Report Card (PDF)"
+     Uses html2pdf.js (loaded via <script> in index.html) to export the
+     existing #results element — no new markup is generated, it captures
+     exactly what the student already sees. Temporarily toggles
+     .pdf-export-mode (see style.css) because html2canvas cannot render
+     backdrop-filter/glassmorphism; the live page is restored immediately
+     after the PDF is produced.
+     ===================================================================== */
+
+  function downloadReportCardPdf() {
+    if (typeof html2pdf === 'undefined') {
+      console.error('CourseTrack — html2pdf.js did not load; check the <script> tag/network.');
+      alert('PDF export is temporarily unavailable. Please check your connection and try again.');
+      return;
+    }
+
+    const safeCode = (dom.studentCodeDisplay.textContent || 'student').trim().replace(/[^\w-]+/g, '_');
+    const fileName = `CourseTrack_Report_${safeCode}.pdf`;
+
+    dom.downloadPdfBtn.disabled = true; // prevent double-clicks while generating
+    document.body.classList.add('pdf-export-mode');
+
+    const options = {
+      margin: 10,
+      filename: fileName,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2, backgroundColor: '#ffffff', useCORS: true },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+    };
+
+    html2pdf().set(options).from(dom.results).save()
+      .catch((err) => {
+        console.error('CourseTrack — PDF export failed:', err);
+        alert('Something went wrong generating the PDF. Please try again.');
+      })
+      .finally(() => {
+        document.body.classList.remove('pdf-export-mode');
+        dom.downloadPdfBtn.disabled = false;
+      });
+  }
+
+  function initDownloadPdf() {
+    if (!dom.downloadPdfBtn) return; // safe no-op if the button isn't on the page
+    dom.downloadPdfBtn.addEventListener('click', downloadReportCardPdf);
+  }
+
+  /* =====================================================================
      10. INITIALIZATION
      ===================================================================== */
 
@@ -544,6 +637,8 @@
       applyBranding();
       initTheme();
       initSearch();
+      initRememberCode();   // NEW: Remember My Code
+      initDownloadPdf();    // NEW: Download Report Card (PDF)
       dom.themeToggle.addEventListener('click', toggleTheme);
     } catch (err) {
       console.error('CourseTrack — initialization error:', err);

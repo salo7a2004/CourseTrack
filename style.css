@@ -474,3 +474,41 @@ img, svg { display: block; }
   .header-orgs { flex-wrap: wrap; }
   .org-chip__body { flex-direction: column; gap: 4px; }
 }
+
+/* =======================================================================
+   19. NEW FEATURE: "Remember My Code" checkbox
+   ======================================================================= */
+.remember-code-row {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  margin-top: 14px; font-size: 0.82rem; color: var(--text-muted);
+  cursor: pointer; user-select: none;
+}
+.remember-code-row input[type="checkbox"] {
+  width: 15px; height: 15px; accent-color: var(--color-primary); cursor: pointer;
+}
+
+/* =======================================================================
+   20. NEW FEATURE: "Download Report Card (PDF)" button + export mode
+   ======================================================================= */
+.results-toolbar { display: flex; justify-content: flex-end; }
+
+.btn--ghost {
+  background: rgba(47, 84, 235, 0.08); color: var(--color-primary-dark);
+}
+.btn--ghost:hover { background: rgba(47, 84, 235, 0.14); }
+.btn--ghost:disabled { opacity: 0.6; cursor: progress; }
+
+/* While a PDF is being captured, html2canvas cannot render
+   backdrop-filter (every .glass-card uses it) — it would otherwise
+   screenshot as a near-blank box. This class is added to <body> only
+   for the instant of capture (see student.js) and swaps every card to
+   a flat, opaque background so the exported PDF is fully legible. It
+   never changes what the live page looks like. */
+.pdf-export-mode .glass-card,
+.pdf-export-mode .timeline-item,
+.pdf-export-mode .final-item {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background: #ffffff !important;
+}
+.pdf-export-mode .results-toolbar { display: none !important; }
