@@ -512,3 +512,32 @@ img, svg { display: block; }
   background: #ffffff !important;
 }
 .pdf-export-mode .results-toolbar { display: none !important; }
+
+/* BUG FIX: Meeting/Task Grade and Notes were disappearing from certain
+   weekly cards in the exported PDF. html2canvas snapshots computed
+   styles synchronously — any element that is mid-transition, has
+   opacity < 1 at that exact instant, is transform-offset, or sits
+   inside an overflow:hidden ancestor can be captured as missing. This
+   forces every element inside #results to a fully settled, visible,
+   non-clipped state for the instant of capture only; nothing here is
+   visible to the student outside of export.
+
+   NOTE: deliberately NOT forcing `display` here. Nothing inside
+   #results is ever display:none to begin with (sections that have no
+   data use the [hidden] attribute and are correctly absent from both
+   the page and the PDF), and a blanket display override would break
+   .timeline-item__body's `display: grid` (the layout that places
+   Meeting Grade / Task Grade / Notes side by side) and every `.tl-field`
+   flex container — i.e. it would reintroduce this exact bug by other
+   means. Opacity/visibility/transform/transition/overflow are the
+   properties that actually cause content to vanish mid-capture, so
+   those are the ones reset. */
+.pdf-export-mode #results,
+.pdf-export-mode #results * {
+  opacity: 1 !important;
+  visibility: visible !important;
+  transform: none !important;
+  animation: none !important;
+  transition: none !important;
+  overflow: visible !important;
+}

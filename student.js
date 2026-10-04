@@ -582,7 +582,27 @@
      after the PDF is produced.
      ===================================================================== */
 
-  function downloadReportCardPdf() {
+  /**
+   * BUG FIX: certain weekly cards' Meeting Grade / Task Grade / Notes
+   * were missing from the exported PDF, even though they render fine
+   * live. Root cause: html2pdf()/html2canvas begins its DOM snapshot
+   * synchronously on the next tick after .pdf-export-mode is added —
+   * before the browser has necessarily finished recalculating layout
+   * for that class change (especially for the .timeline-item__body
+   * CSS Grid, which can take an extra frame to settle once backgrounds/
+   * borders change). The capture would occasionally race that reflow
+   * and grab a not-yet-laid-out frame for some cards. Waiting a couple
+   * of animation frames plus a short buffer lets layout fully settle
+   * first — this is the actual fix; the CSS reset above is additional
+   * insurance against the same symptom caused by opacity/transform.
+   */
+  function waitForLayoutToSettle(delayMs) {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => window.setTimeout(resolve, delayMs)));
+    });
+  }
+
+  async function downloadReportCardPdf() {
     if (typeof html2pdf === 'undefined') {
       console.error('CourseTrack — html2pdf.js did not load; check the <script> tag/network.');
       alert('PDF export is temporarily unavailable. Please check your connection and try again.');
@@ -595,23 +615,27 @@
     dom.downloadPdfBtn.disabled = true; // prevent double-clicks while generating
     document.body.classList.add('pdf-export-mode');
 
-    const options = {
-      margin: 10,
-      filename: fileName,
-      image: { type: 'jpeg', quality: 0.98 },
-      html2canvas: { scale: 2, backgroundColor: '#ffffff', useCORS: true },
-      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-    };
+    try {
+      // Give the browser time to finish reflow/repaint for the new
+      // class before html2canvas takes its snapshot.
+      await waitForLayoutToSettle(250);
 
-    html2pdf().set(options).from(dom.results).save()
-      .catch((err) => {
-        console.error('CourseTrack — PDF export failed:', err);
-        alert('Something went wrong generating the PDF. Please try again.');
-      })
-      .finally(() => {
-        document.body.classList.remove('pdf-export-mode');
-        dom.downloadPdfBtn.disabled = false;
-      });
+      const options = {
+        margin: 10,
+        filename: fileName,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, backgroundColor: '#ffffff', useCORS: true },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+      };
+
+      await html2pdf().set(options).from(dom.results).save();
+    } catch (err) {
+      console.error('CourseTrack — PDF export failed:', err);
+      alert('Something went wrong generating the PDF. Please try again.');
+    } finally {
+      document.body.classList.remove('pdf-export-mode');
+      dom.downloadPdfBtn.disabled = false;
+    }
   }
 
   function initDownloadPdf() {
