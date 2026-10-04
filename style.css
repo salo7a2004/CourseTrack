@@ -540,4 +540,33 @@ img, svg { display: block; }
   animation: none !important;
   transition: none !important;
   overflow: visible !important;
+  /* Several elements here (.timeline-item, .final-item, .tl-field) use
+     a fixed --card-min-height/min-height for a tidy on-screen grid.
+     That's harmless on a single web page, but across a PDF page break
+     it can reserve more vertical space than the content needs and get
+     cut by the page boundary. Letting height follow content removes
+     that risk entirely. */
+  height: auto !important;
+  min-height: auto !important;
+}
+
+/* BUG FIX: cards were being sliced across PDF page breaks — a Week card
+   split horizontally mid-card, and the Final Result grid split with
+   Tasks %/Bonus/Final Score stranded on page 2. html2pdf's 'css'
+   pagebreak mode (enabled in student.js) looks for exactly these
+   break-inside rules on the actual repeating units:
+     - .timeline-item  = one whole Week card
+     - .tl-field        = one Meeting/Task/Notes block within a Week card
+     - .final-item      = one Final Result tile (e.g. "Final Score")
+     - .profile-card    = the Student Profile card
+   Deliberately NOT applied to .final-grid/.timeline itself — avoiding
+   break-inside on the whole grid would force the entire section onto
+   a single page as one unit, which can leave a large blank gap at the
+   bottom of the previous page instead of flowing naturally. */
+.pdf-export-mode .timeline-item,
+.pdf-export-mode .tl-field,
+.pdf-export-mode .final-item,
+.pdf-export-mode .profile-card {
+  page-break-inside: avoid !important;
+  break-inside: avoid !important;
 }

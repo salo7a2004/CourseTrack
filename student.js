@@ -621,11 +621,19 @@
       await waitForLayoutToSettle(250);
 
       const options = {
-        margin: 10,
+        margin: [10, 10, 10, 10], // top, left, bottom, right (mm)
         filename: fileName,
         image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2, backgroundColor: '#ffffff', useCORS: true },
+        html2canvas: { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false },
         jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        // BUG FIX: 'css' tells html2pdf to respect the break-inside:avoid
+        // rules added in style.css (on .timeline-item/.tl-field/
+        // .final-item/.profile-card) instead of breaking pages at
+        // arbitrary pixel offsets, which was slicing cards and the
+        // Final Result grid mid-content. 'avoid-all' adds the same
+        // avoidance as a blanket default, 'legacy' keeps the older
+        // behavior as a fallback for anything the other two modes miss.
+        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
       };
 
       await html2pdf().set(options).from(dom.results).save();
