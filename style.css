@@ -569,4 +569,21 @@ img, svg { display: block; }
 .pdf-export-mode .profile-card {
   page-break-inside: avoid !important;
   break-inside: avoid !important;
+  margin-bottom: 14px !important; /* breathing room when a card gets pushed to a fresh page, so it isn't flush against the new top margin */
+}
+
+/* .timeline-item is a plain <div> with no competing `display` rule, so
+   this is a true no-op on-screen — included only because html2pdf's
+   pagination step reads it more reliably when it's explicit.
+   NOT applied to .profile-card, .final-item or .tl-field: all three
+   rely on `display: flex` for their OWN internal child layout
+   (.profile-card lays the avatar / name-code-email / badge out in a
+   row; .final-item centers its label+value pair; .tl-field centers its
+   icon+label+value). Forcing `display: block` there would override
+   that — on .profile-card in particular it would collapse the row into
+   a vertical stack — for no pagination benefit, since break-inside
+   already works on flex/grid containers (their *outer* display is
+   still block-level; only their children are flex/grid-laid-out). */
+.pdf-export-mode .timeline-item {
+  display: block !important;
 }

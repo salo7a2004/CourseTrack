@@ -621,19 +621,33 @@
       await waitForLayoutToSettle(250);
 
       const options = {
-        margin: [10, 10, 10, 10], // top, left, bottom, right (mm)
+        margin: [12, 10, 12, 10], // top, left, bottom, right (mm) — a touch taller than before so a card pushed to a fresh page has clearance
         filename: fileName,
         image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2, backgroundColor: '#ffffff', useCORS: true, logging: false },
+        html2canvas: {
+          scale: 2,
+          backgroundColor: '#ffffff',
+          useCORS: true,
+          logging: false,
+          scrollX: 0,
+          scrollY: 0, // ignore the page's current scroll position — a scrolled viewport can otherwise clip/offset what gets captured
+          windowWidth: 1200, // render at a fixed desktop width so the responsive grid never restacks into a single narrow column mid-export
+        },
         jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-        // BUG FIX: 'css' tells html2pdf to respect the break-inside:avoid
-        // rules added in style.css (on .timeline-item/.tl-field/
-        // .final-item/.profile-card) instead of breaking pages at
-        // arbitrary pixel offsets, which was slicing cards and the
-        // Final Result grid mid-content. 'avoid-all' adds the same
-        // avoidance as a blanket default, 'legacy' keeps the older
-        // behavior as a fallback for anything the other two modes miss.
-        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
+        // BUG FIX (round 3): cards were still getting sliced under the
+        // previous 'avoid-all' + 'css' config. Switched to html2pdf's
+        // more reliable mechanism — 'css' mode PLUS an explicit `avoid`
+        // selector list — which targets these elements directly instead
+        // of depending entirely on CSS cascade introspection inside
+        // html2pdf's internal clone. 'avoid-all' was removed: it marks
+        // every element as unbreakable, which in practice tends to
+        // produce erratic, excessive pagination rather than fixing
+        // anything. 'legacy' stays as a fallback for content the
+        // selector list doesn't cover.
+        pagebreak: {
+          mode: ['css', 'legacy'],
+          avoid: ['.timeline-item', '.tl-field', '.final-item', '.profile-card'],
+        },
       };
 
       await html2pdf().set(options).from(dom.results).save();
