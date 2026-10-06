@@ -574,27 +574,17 @@
 
   /* =====================================================================
      NEW FEATURE 2: "Download Report Card (PDF)"
-     Uses html2pdf.js (loaded via <script> in index.html) to export the
-     existing #results element — no new markup is generated, it captures
-     exactly what the student already sees. Temporarily toggles
-     .pdf-export-mode (see style.css) because html2canvas cannot render
-     backdrop-filter/glassmorphism; the live page is restored immediately
-     after the PDF is produced.
+     Uses html2pdf.js (loaded via <script> in index.html). Captures a
+     detached, off-screen CLONE of #results — never the live element
+     itself — built with simple, fixed, print-only styling (see
+     #pdf-clone-container in style.css). See downloadReportCardPdf's own
+     doc comment below for the full rationale.
      ===================================================================== */
 
   /**
-   * BUG FIX: certain weekly cards' Meeting Grade / Task Grade / Notes
-   * were missing from the exported PDF, even though they render fine
-   * live. Root cause: html2pdf()/html2canvas begins its DOM snapshot
-   * synchronously on the next tick after .pdf-export-mode is added —
-   * before the browser has necessarily finished recalculating layout
-   * for that class change (especially for the .timeline-item__body
-   * CSS Grid, which can take an extra frame to settle once backgrounds/
-   * borders change). The capture would occasionally race that reflow
-   * and grab a not-yet-laid-out frame for some cards. Waiting a couple
-   * of animation frames plus a short buffer lets layout fully settle
-   * first — this is the actual fix; the CSS reset above is additional
-   * insurance against the same symptom caused by opacity/transform.
+   * Waits a couple of animation frames plus a short buffer so the
+   * browser has actually laid out/painted a just-inserted DOM subtree
+   * before html2canvas captures it.
    */
   function waitForLayoutToSettle(delayMs) {
     return new Promise((resolve) => {
@@ -602,6 +592,24 @@
     });
   }
 
+  /**
+   * "Cloned Print Wrapper" strategy — REPLACES the previous approach of
+   * toggling override classes onto the live #results element. That kept
+   * surfacing new symptoms round after round (vanishing content, mid-
+   * card page breaks, and finally a horizontal offset from a
+   * `windowWidth` option disagreeing with the live page's actual
+   * rendered width). The live page's responsive/glassmorphism styling
+   * was simply never going to be a reliable source for a fixed-size,
+   * paginated A4 document.
+   *
+   * Instead: clone #results, strip the one element that shouldn't be in
+   * a PDF (the Download button itself), drop the clone into a detached,
+   * off-screen, fixed-width container (#pdf-clone-container in
+   * style.css — print-only styling lives there, scoped so it can never
+   * affect the live page), capture THAT, then always remove it — the
+   * live DOM is never modified, so none of the earlier failure modes
+   * are even possible anymore.
+   */
   async function downloadReportCardPdf() {
     if (typeof html2pdf === 'undefined') {
       console.error('CourseTrack — html2pdf.js did not load; check the <script> tag/network.');
@@ -613,49 +621,56 @@
     const fileName = `CourseTrack_Report_${safeCode}.pdf`;
 
     dom.downloadPdfBtn.disabled = true; // prevent double-clicks while generating
-    document.body.classList.add('pdf-export-mode');
+
+    // Build the clone: a standalone copy of #results that the student
+    // never sees, so capturing it can never visibly affect the live page.
+    const clone = dom.results.cloneNode(true);
+    const cloneToolbar = clone.querySelector('.results-toolbar');
+    if (cloneToolbar) cloneToolbar.remove(); // never show the Download button in its own PDF
+
+    const wrapper = document.createElement('div');
+    wrapper.id = 'pdf-clone-container';
+    // Positioning is set inline (not via CSS) so it is guaranteed to
+    // apply the instant the element exists, keeping it fully off the
+    // visible page the whole time it's attached.
+    wrapper.style.position = 'absolute';
+    wrapper.style.left = '-9999px';
+    wrapper.style.top = '0';
+    wrapper.style.width = '794px'; // standard A4 width at 96 DPI
+    wrapper.appendChild(clone);
+    document.body.appendChild(wrapper);
 
     try {
-      // Give the browser time to finish reflow/repaint for the new
-      // class before html2canvas takes its snapshot.
-      await waitForLayoutToSettle(250);
+      await waitForLayoutToSettle(150);
 
       const options = {
-        margin: [12, 10, 12, 10], // top, left, bottom, right (mm) — a touch taller than before so a card pushed to a fresh page has clearance
+        margin: 10,
         filename: fileName,
         image: { type: 'jpeg', quality: 0.98 },
         html2canvas: {
           scale: 2,
-          backgroundColor: '#ffffff',
           useCORS: true,
           logging: false,
           scrollX: 0,
-          scrollY: 0, // ignore the page's current scroll position — a scrolled viewport can otherwise clip/offset what gets captured
-          windowWidth: 1200, // render at a fixed desktop width so the responsive grid never restacks into a single narrow column mid-export
+          scrollY: 0,
+          backgroundColor: '#ffffff',
+          // NOTE: no `windowWidth` here — that option was what caused
+          // the previous horizontal-offset bug. The clone already has
+          // an explicit, fixed width, so there is nothing to simulate.
         },
         jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-        // BUG FIX (round 3): cards were still getting sliced under the
-        // previous 'avoid-all' + 'css' config. Switched to html2pdf's
-        // more reliable mechanism — 'css' mode PLUS an explicit `avoid`
-        // selector list — which targets these elements directly instead
-        // of depending entirely on CSS cascade introspection inside
-        // html2pdf's internal clone. 'avoid-all' was removed: it marks
-        // every element as unbreakable, which in practice tends to
-        // produce erratic, excessive pagination rather than fixing
-        // anything. 'legacy' stays as a fallback for content the
-        // selector list doesn't cover.
         pagebreak: {
           mode: ['css', 'legacy'],
           avoid: ['.timeline-item', '.tl-field', '.final-item', '.profile-card'],
         },
       };
 
-      await html2pdf().set(options).from(dom.results).save();
+      await html2pdf().set(options).from(wrapper).save();
     } catch (err) {
       console.error('CourseTrack — PDF export failed:', err);
       alert('Something went wrong generating the PDF. Please try again.');
     } finally {
-      document.body.classList.remove('pdf-export-mode');
+      wrapper.remove(); // always clean up, success or failure — the clone must never linger in the live DOM
       dom.downloadPdfBtn.disabled = false;
     }
   }

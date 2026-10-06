@@ -488,7 +488,23 @@ img, svg { display: block; }
 }
 
 /* =======================================================================
-   20. NEW FEATURE: "Download Report Card (PDF)" button + export mode
+   20. NEW FEATURE: "Download Report Card (PDF)" — Cloned Print Wrapper
+   -----------------------------------------------------------------------
+   REPLACES the previous `.pdf-export-mode` approach entirely (that class
+   and every rule under it have been removed). That approach toggled
+   override classes onto the LIVE #results element and tried to cancel
+   out its responsive/glassmorphism styling piece by piece — each round
+   fixed one symptom (backdrop-filter, vanishing content, mid-card page
+   breaks) but the underlying strategy kept producing new ones, most
+   recently a horizontal offset from a `windowWidth` option fighting the
+   live page's actual rendered width.
+
+   The new strategy (see downloadReportCardPdf in student.js): clone
+   #results, drop the clone into its own detached #pdf-clone-container
+   with simple, fixed, non-responsive styling below, capture THAT, then
+   remove it. The live page is never touched, so none of the above can
+   happen in the first place — no live-DOM class toggling, no scroll
+   position, no responsive breakpoints, no risk of visible flicker.
    ======================================================================= */
 .results-toolbar { display: flex; justify-content: flex-end; }
 
@@ -498,92 +514,64 @@ img, svg { display: block; }
 .btn--ghost:hover { background: rgba(47, 84, 235, 0.14); }
 .btn--ghost:disabled { opacity: 0.6; cursor: progress; }
 
-/* While a PDF is being captured, html2canvas cannot render
-   backdrop-filter (every .glass-card uses it) — it would otherwise
-   screenshot as a near-blank box. This class is added to <body> only
-   for the instant of capture (see student.js) and swaps every card to
-   a flat, opaque background so the exported PDF is fully legible. It
-   never changes what the live page looks like. */
-.pdf-export-mode .glass-card,
-.pdf-export-mode .timeline-item,
-.pdf-export-mode .final-item {
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
+/* The clone's own wrapper: fixed A4-ish width, opaque, print-safe
+   defaults. Position/offset (`position: absolute; left: -9999px`) is
+   set as an inline style in student.js, not here, so it's guaranteed
+   to apply the instant the element is created — before this stylesheet
+   has a chance to matter. */
+#pdf-clone-container {
+  width: 794px !important; /* standard A4 width at 96 DPI */
   background: #ffffff !important;
+  color: #1e2a47 !important;
+  padding: 20px !important;
+  box-sizing: border-box !important;
+  font-family: var(--font-body), sans-serif !important;
 }
-.pdf-export-mode .results-toolbar { display: none !important; }
 
-/* BUG FIX: Meeting/Task Grade and Notes were disappearing from certain
-   weekly cards in the exported PDF. html2canvas snapshots computed
-   styles synchronously — any element that is mid-transition, has
-   opacity < 1 at that exact instant, is transform-offset, or sits
-   inside an overflow:hidden ancestor can be captured as missing. This
-   forces every element inside #results to a fully settled, visible,
-   non-clipped state for the instant of capture only; nothing here is
-   visible to the student outside of export.
-
-   NOTE: deliberately NOT forcing `display` here. Nothing inside
-   #results is ever display:none to begin with (sections that have no
-   data use the [hidden] attribute and are correctly absent from both
-   the page and the PDF), and a blanket display override would break
-   .timeline-item__body's `display: grid` (the layout that places
-   Meeting Grade / Task Grade / Notes side by side) and every `.tl-field`
-   flex container — i.e. it would reintroduce this exact bug by other
-   means. Opacity/visibility/transform/transition/overflow are the
-   properties that actually cause content to vanish mid-capture, so
-   those are the ones reset. */
-.pdf-export-mode #results,
-.pdf-export-mode #results * {
-  opacity: 1 !important;
-  visibility: visible !important;
+/* Reset every descendant for predictable, non-animated, non-clipped
+   print rendering. Deliberately does NOT touch `display` — every
+   element here keeps its real flex/grid layout (.timeline-item__body's
+   grid, .tl-field's and .profile-card's flex), since overriding it has
+   no pagination benefit and previously broke those layouts. */
+#pdf-clone-container * {
+  box-sizing: border-box !important;
   transform: none !important;
   animation: none !important;
   transition: none !important;
+  opacity: 1 !important;
+  visibility: visible !important;
   overflow: visible !important;
-  /* Several elements here (.timeline-item, .final-item, .tl-field) use
-     a fixed --card-min-height/min-height for a tidy on-screen grid.
-     That's harmless on a single web page, but across a PDF page break
-     it can reserve more vertical space than the content needs and get
-     cut by the page boundary. Letting height follow content removes
-     that risk entirely. */
   height: auto !important;
   min-height: auto !important;
 }
 
-/* BUG FIX: cards were being sliced across PDF page breaks — a Week card
-   split horizontally mid-card, and the Final Result grid split with
-   Tasks %/Bonus/Final Score stranded on page 2. html2pdf's 'css'
-   pagebreak mode (enabled in student.js) looks for exactly these
-   break-inside rules on the actual repeating units:
-     - .timeline-item  = one whole Week card
-     - .tl-field        = one Meeting/Task/Notes block within a Week card
-     - .final-item      = one Final Result tile (e.g. "Final Score")
-     - .profile-card    = the Student Profile card
-   Deliberately NOT applied to .final-grid/.timeline itself — avoiding
-   break-inside on the whole grid would force the entire section onto
-   a single page as one unit, which can leave a large blank gap at the
-   bottom of the previous page instead of flowing naturally. */
-.pdf-export-mode .timeline-item,
-.pdf-export-mode .tl-field,
-.pdf-export-mode .final-item,
-.pdf-export-mode .profile-card {
-  page-break-inside: avoid !important;
-  break-inside: avoid !important;
-  margin-bottom: 14px !important; /* breathing room when a card gets pushed to a fresh page, so it isn't flush against the new top margin */
+/* backdrop-filter (used by every .glass-card) cannot be rasterized by
+   html2canvas — it renders as a near-blank box. The clone never needs
+   the blur effect anyway, so every card gets a flat white background. */
+#pdf-clone-container .glass-card,
+#pdf-clone-container .timeline-item,
+#pdf-clone-container .final-item,
+#pdf-clone-container .tl-field {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  background: #ffffff !important;
+  border: 1px solid #e3e8f2 !important; /* keep a visible card edge now that the glass shadow/blur is gone */
 }
 
-/* .timeline-item is a plain <div> with no competing `display` rule, so
-   this is a true no-op on-screen — included only because html2pdf's
-   pagination step reads it more reliably when it's explicit.
-   NOT applied to .profile-card, .final-item or .tl-field: all three
-   rely on `display: flex` for their OWN internal child layout
-   (.profile-card lays the avatar / name-code-email / badge out in a
-   row; .final-item centers its label+value pair; .tl-field centers its
-   icon+label+value). Forcing `display: block` there would override
-   that — on .profile-card in particular it would collapse the row into
-   a vertical stack — for no pagination benefit, since break-inside
-   already works on flex/grid containers (their *outer* display is
-   still block-level; only their children are flex/grid-laid-out). */
-.pdf-export-mode .timeline-item {
-  display: block !important;
+/* The atomic units that must never be sliced across a page boundary —
+   matched by the `pagebreak.avoid` selector list in student.js, which
+   is the mechanism that actually enforces this (the CSS alone is a
+   secondary signal, not the primary one). Deliberately NOT applied to
+   .final-grid/.timeline/#final-section themselves — avoiding
+   break-inside on the whole grid would force the entire section onto a
+   single page as one block, which can leave a large blank gap instead
+   of flowing naturally from tile to tile. */
+#pdf-clone-container .timeline-item,
+#pdf-clone-container .tl-field,
+#pdf-clone-container .final-item,
+#pdf-clone-container .profile-card {
+  page-break-inside: avoid !important;
+  break-inside: avoid !important;
+  width: 100% !important;
+  margin-bottom: 20px !important;
 }
