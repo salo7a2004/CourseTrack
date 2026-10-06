@@ -574,21 +574,104 @@
 
   /* =====================================================================
      NEW FEATURE 2: "Download Report Card (PDF)"
-     REPLACES every previous html2pdf.js/html2canvas approach (direct
-     live-DOM capture, then a detached clone) with the browser's own
-     native print pipeline: window.print() + @media print rules in
-     style.css. This is deliberately the simplest possible
-     implementation — there is no DOM snapshot/rasterization step left
-     to go wrong, which is what caused every prior issue (missing
-     content, mid-card page breaks, horizontal offset). The browser's
-     real print engine handles CSS Grid/Flexbox, pagination, and page
-     breaks correctly on its own. The student uses their browser's
-     print dialog's own "Save as PDF" destination to get a PDF file.
+     Prints through a hidden, fully isolated iframe rather than the live
+     page: only #results' content exists in that document at all, so
+     there is nothing else that could ever leak into the printout and
+     nothing on the live page is ever touched.
+
+     Deliberately reuses the real style.css (via a normal <link>) rather
+     than hand-duplicating its card/badge/icon/status styling in a
+     second, parallel copy — that second copy would start drifting from
+     the real design the moment either one changes, and would be missing
+     plenty of classes (.profile-badge, .avatar, .tl-field__icon, etc.)
+     on day one. The existing @media print rules in style.css (hide
+     non-report chrome, flatten glass cards to a plain border, avoid
+     breaking a card across a page) apply here exactly as written —
+     nothing print-specific needed to be duplicated either.
      ===================================================================== */
 
   function initDownloadPdf() {
     if (!dom.downloadPdfBtn) return; // safe no-op if the button isn't on the page
-    dom.downloadPdfBtn.addEventListener('click', () => window.print());
+
+    dom.downloadPdfBtn.addEventListener('click', () => {
+      if (!dom.results) return;
+
+      // 1. Hidden iframe — its own separate document, so printing it can
+      //    never be affected by (or bleed into) the live page.
+      const printFrame = document.createElement('iframe');
+      printFrame.setAttribute('aria-hidden', 'true');
+      printFrame.style.position = 'fixed';
+      printFrame.style.right = '0';
+      printFrame.style.bottom = '0';
+      printFrame.style.width = '0';
+      printFrame.style.height = '0';
+      printFrame.style.border = '0';
+      document.body.appendChild(printFrame);
+
+      // 2. Clone just the results, with the toolbar (Download button)
+      //    stripped out — it should never appear in its own printout.
+      const resultsClone = dom.results.cloneNode(true);
+      const toolbarClone = resultsClone.querySelector('.results-toolbar');
+      if (toolbarClone) toolbarClone.remove();
+
+      const studentCode = ((dom.studentCodeDisplay && dom.studentCodeDisplay.textContent) || 'Student').trim();
+      const liveStylesheet = document.querySelector('link[rel="stylesheet"][href*="style.css"]');
+      const styleHref = liveStylesheet ? liveStylesheet.href : 'style.css';
+
+      const frameDoc = printFrame.contentWindow.document;
+      frameDoc.open();
+      // lang/dir are deliberately "en"/ltr — matching index.html's own
+      // root — regardless of any Arabic content inside the report:
+      // individual name/notes/email fields keep their own dir="auto"
+      // (cloned along with every other attribute), which is what
+      // correctly right-aligns just that text. No data-theme attribute
+      // is set either, even if the student currently has Dark Mode on:
+      // that guarantees the printed page always uses style.css's
+      // default (light) colors, never dark-mode text colors that would
+      // be unreadable against white paper.
+      frameDoc.write(`<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<title>CourseTrack Report - ${studentCode}</title>
+<link rel="stylesheet" href="${styleHref}">
+</head>
+<body></body>
+</html>`);
+      frameDoc.close();
+      frameDoc.body.appendChild(resultsClone);
+
+      // 3. The iframe is a separate document, so it only has style.css's
+      //    DEFAULT brand colors — mirror the same runtime override
+      //    applyBranding() already applies on the live page from
+      //    config.js, so a customized brand color prints correctly too.
+      if (window.APP_CONFIG && window.APP_CONFIG.colors) {
+        const root = frameDoc.documentElement.style;
+        if (window.APP_CONFIG.colors.primary) root.setProperty('--color-primary', window.APP_CONFIG.colors.primary);
+        if (window.APP_CONFIG.colors.secondary) root.setProperty('--color-accent', window.APP_CONFIG.colors.secondary);
+      }
+
+      // 4. Print only once style.css has actually finished loading —
+      //    printing a beat too early would show the report unstyled.
+      const cleanupAndPrint = () => {
+        printFrame.contentWindow.focus();
+        printFrame.contentWindow.print();
+        // Give the print dialog a moment to open before the iframe
+        // (and the stylesheet it depends on) is torn down.
+        window.setTimeout(() => printFrame.remove(), 1000);
+      };
+
+      const linkEl = frameDoc.querySelector('link[rel="stylesheet"]');
+      if (linkEl) {
+        linkEl.addEventListener('load', cleanupAndPrint, { once: true });
+        linkEl.addEventListener('error', () => {
+          console.error('CourseTrack — print stylesheet failed to load in the print frame.');
+          cleanupAndPrint(); // still let them print rather than silently doing nothing
+        }, { once: true });
+      } else {
+        cleanupAndPrint();
+      }
+    });
   }
 
   /* =====================================================================
