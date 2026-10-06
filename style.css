@@ -527,13 +527,26 @@ img, svg { display: block; }
     display: none !important;
   }
 
-  /* Flat, ink-friendly page: no gradient background, no glass shadows,
-     clean executive-report typography. */
+  /* Most browsers' print dialogs default to NOT printing background
+     colors/images/gradients unless the person manually enables
+     "Background graphics" — without this, every background-dependent
+     element here (the avatar's gradient circle, the status pills, the
+     muted card headers) would silently print as plain white. This
+     forces backgrounds to always print, regardless of that setting. */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Flat, ink-friendly page: no gradient page-background, no glass
+     shadows, clean executive-report typography at a larger, more
+     legible print size. */
   body {
     background: #ffffff !important;
     color: var(--print-ink) !important;
     font-family: var(--font-body), 'Segoe UI', Tahoma, sans-serif !important;
-    line-height: 1.5 !important;
+    font-size: 15px !important;
+    line-height: 1.6 !important;
   }
 
   #results {
@@ -567,12 +580,31 @@ img, svg { display: block; }
 
   /* ---- Section titles: accented, like a report's own headings ---- */
   .section-title {
-    font-size: 15px !important;
+    font-size: 19px !important;
     color: #1e3a8a !important;
     padding-left: 10px;
     border-left: 4px solid var(--color-primary);
   }
   .section-title svg { display: none !important; } /* icons read as UI chrome on paper, not report content */
+
+  .profile-info h3 { font-size: 20px !important; }
+  .print-header__title { font-size: 20px !important; }
+
+  /* The timeline connector (vertical line + circular "node" per week)
+     is a screen-only decoration: .timeline-item::before is deliberately
+     positioned at left:-30px into a gutter .timeline reserves for it.
+     That gutter, and the page's own default print margin, don't line
+     up the same way a browser viewport does — the dot ends up looking
+     clipped at the page/card edge. Rather than fight that positioning
+     math for a purely decorative element, it's simplest and cleanest
+     to not render it at all in print, and close up the gutter it used
+     to occupy so cards aren't left with an odd empty strip on the left. */
+  .timeline { padding-left: 0 !important; }
+  .timeline::before,
+  .timeline-item::before {
+    content: none !important;
+    display: none !important;
+  }
 
   /* ---- Cards: muted header strip, subtle border, no glass/shadow ---- */
   .glass-card, .timeline-item, .final-item, .tl-field {
@@ -591,11 +623,17 @@ img, svg { display: block; }
      Background tints are fixed print-only colors; the TEXT stays the
      real --success/--danger/--warning/--text-muted so a status always
      reads as the exact same color on screen and on paper. ---- */
-  .tl-field__value, .final-item__value {
+  .tl-field__value {
     display: inline-block !important;
     padding: 3px 10px !important;
     border-radius: 999px !important;
-    font-size: 12.5px !important;
+    font-size: 14px !important;
+  }
+  .final-item__value {
+    display: inline-block !important;
+    padding: 4px 12px !important;
+    border-radius: 999px !important;
+    font-size: 17px !important; /* final results (Score, Rank, Status) stay prominent, matching their on-screen emphasis */
   }
   /* .profile-badge is intentionally untouched — it already has correct
      flex-based pill styling on screen (icon + text in a row); adding it
