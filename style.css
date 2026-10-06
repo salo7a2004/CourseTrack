@@ -488,23 +488,16 @@ img, svg { display: block; }
 }
 
 /* =======================================================================
-   20. NEW FEATURE: "Download Report Card (PDF)" — Cloned Print Wrapper
+   20. NEW FEATURE: "Download Report Card (PDF)" — native browser print
    -----------------------------------------------------------------------
-   REPLACES the previous `.pdf-export-mode` approach entirely (that class
-   and every rule under it have been removed). That approach toggled
-   override classes onto the LIVE #results element and tried to cancel
-   out its responsive/glassmorphism styling piece by piece — each round
-   fixed one symptom (backdrop-filter, vanishing content, mid-card page
-   breaks) but the underlying strategy kept producing new ones, most
-   recently a horizontal offset from a `windowWidth` option fighting the
-   live page's actual rendered width.
-
-   The new strategy (see downloadReportCardPdf in student.js): clone
-   #results, drop the clone into its own detached #pdf-clone-container
-   with simple, fixed, non-responsive styling below, capture THAT, then
-   remove it. The live page is never touched, so none of the above can
-   happen in the first place — no live-DOM class toggling, no scroll
-   position, no responsive breakpoints, no risk of visible flicker.
+   REPLACES every previous html2pdf.js/html2canvas approach (direct
+   live-DOM capture, then a detached off-screen clone) with the
+   browser's own print pipeline, triggered by window.print() in
+   student.js. No library, no DOM cloning, no rasterization step —
+   the browser's real print engine already handles CSS Grid/Flexbox
+   and pagination correctly, which is what every earlier approach was
+   fighting to reproduce. The student picks "Save as PDF" as the
+   destination in their browser's own print dialog.
    ======================================================================= */
 .results-toolbar { display: flex; justify-content: flex-end; }
 
@@ -514,64 +507,46 @@ img, svg { display: block; }
 .btn--ghost:hover { background: rgba(47, 84, 235, 0.14); }
 .btn--ghost:disabled { opacity: 0.6; cursor: progress; }
 
-/* The clone's own wrapper: fixed A4-ish width, opaque, print-safe
-   defaults. Position/offset (`position: absolute; left: -9999px`) is
-   set as an inline style in student.js, not here, so it's guaranteed
-   to apply the instant the element is created — before this stylesheet
-   has a chance to matter. */
-#pdf-clone-container {
-  width: 794px !important; /* standard A4 width at 96 DPI */
-  background: #ffffff !important;
-  color: #1e2a47 !important;
-  padding: 20px !important;
-  box-sizing: border-box !important;
-  font-family: var(--font-body), sans-serif !important;
-}
+@media print {
+  /* Hide every non-printable UI element — chrome, controls, and
+     anything that isn't part of the report itself. */
+  header, footer, button,
+  .search-card, .search-loading, .no-data-hint, .results-toolbar {
+    display: none !important;
+  }
 
-/* Reset every descendant for predictable, non-animated, non-clipped
-   print rendering. Deliberately does NOT touch `display` — every
-   element here keeps its real flex/grid layout (.timeline-item__body's
-   grid, .tl-field's and .profile-card's flex), since overriding it has
-   no pagination benefit and previously broke those layouts. */
-#pdf-clone-container * {
-  box-sizing: border-box !important;
-  transform: none !important;
-  animation: none !important;
-  transition: none !important;
-  opacity: 1 !important;
-  visibility: visible !important;
-  overflow: visible !important;
-  height: auto !important;
-  min-height: auto !important;
-}
+  /* Flat, ink-friendly page: no gradient background, no glass shadows. */
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
 
-/* backdrop-filter (used by every .glass-card) cannot be rasterized by
-   html2canvas — it renders as a near-blank box. The clone never needs
-   the blur effect anyway, so every card gets a flat white background. */
-#pdf-clone-container .glass-card,
-#pdf-clone-container .timeline-item,
-#pdf-clone-container .final-item,
-#pdf-clone-container .tl-field {
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-  background: #ffffff !important;
-  border: 1px solid #e3e8f2 !important; /* keep a visible card edge now that the glass shadow/blur is gone */
-}
+  #results {
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
 
-/* The atomic units that must never be sliced across a page boundary —
-   matched by the `pagebreak.avoid` selector list in student.js, which
-   is the mechanism that actually enforces this (the CSS alone is a
-   secondary signal, not the primary one). Deliberately NOT applied to
-   .final-grid/.timeline/#final-section themselves — avoiding
-   break-inside on the whole grid would force the entire section onto a
-   single page as one block, which can leave a large blank gap instead
-   of flowing naturally from tile to tile. */
-#pdf-clone-container .timeline-item,
-#pdf-clone-container .tl-field,
-#pdf-clone-container .final-item,
-#pdf-clone-container .profile-card {
-  page-break-inside: avoid !important;
-  break-inside: avoid !important;
-  width: 100% !important;
-  margin-bottom: 20px !important;
+  /* Every card loses its glassmorphism (backdrop-filter doesn't serve
+     any purpose on a printed/PDF page, and a plain border reads better
+     on paper anyway) and its on-screen shadow, replaced with a simple
+     1px border so cards stay visually separated. */
+  .glass-card, .timeline-item, .final-item, .tl-field {
+    background: #ffffff !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    box-shadow: none !important;
+    border: 1px solid #e0e0e0 !important;
+  }
+
+  /* The atomic units that must never be sliced across a page break.
+     Deliberately NOT applied to .final-grid/.timeline/#final-section
+     themselves — avoiding break-inside on the whole grid/section would
+     force it onto a single page as one block, which can leave a large
+     blank gap instead of flowing naturally from card to card. */
+  .glass-card, .timeline-item, .final-item, .tl-field, .profile-card {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    margin-bottom: 15px !important;
+  }
 }

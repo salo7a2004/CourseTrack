@@ -574,110 +574,21 @@
 
   /* =====================================================================
      NEW FEATURE 2: "Download Report Card (PDF)"
-     Uses html2pdf.js (loaded via <script> in index.html). Captures a
-     detached, off-screen CLONE of #results — never the live element
-     itself — built with simple, fixed, print-only styling (see
-     #pdf-clone-container in style.css). See downloadReportCardPdf's own
-     doc comment below for the full rationale.
+     REPLACES every previous html2pdf.js/html2canvas approach (direct
+     live-DOM capture, then a detached clone) with the browser's own
+     native print pipeline: window.print() + @media print rules in
+     style.css. This is deliberately the simplest possible
+     implementation — there is no DOM snapshot/rasterization step left
+     to go wrong, which is what caused every prior issue (missing
+     content, mid-card page breaks, horizontal offset). The browser's
+     real print engine handles CSS Grid/Flexbox, pagination, and page
+     breaks correctly on its own. The student uses their browser's
+     print dialog's own "Save as PDF" destination to get a PDF file.
      ===================================================================== */
-
-  /**
-   * Waits a couple of animation frames plus a short buffer so the
-   * browser has actually laid out/painted a just-inserted DOM subtree
-   * before html2canvas captures it.
-   */
-  function waitForLayoutToSettle(delayMs) {
-    return new Promise((resolve) => {
-      requestAnimationFrame(() => requestAnimationFrame(() => window.setTimeout(resolve, delayMs)));
-    });
-  }
-
-  /**
-   * "Cloned Print Wrapper" strategy — REPLACES the previous approach of
-   * toggling override classes onto the live #results element. That kept
-   * surfacing new symptoms round after round (vanishing content, mid-
-   * card page breaks, and finally a horizontal offset from a
-   * `windowWidth` option disagreeing with the live page's actual
-   * rendered width). The live page's responsive/glassmorphism styling
-   * was simply never going to be a reliable source for a fixed-size,
-   * paginated A4 document.
-   *
-   * Instead: clone #results, strip the one element that shouldn't be in
-   * a PDF (the Download button itself), drop the clone into a detached,
-   * off-screen, fixed-width container (#pdf-clone-container in
-   * style.css — print-only styling lives there, scoped so it can never
-   * affect the live page), capture THAT, then always remove it — the
-   * live DOM is never modified, so none of the earlier failure modes
-   * are even possible anymore.
-   */
-  async function downloadReportCardPdf() {
-    if (typeof html2pdf === 'undefined') {
-      console.error('CourseTrack — html2pdf.js did not load; check the <script> tag/network.');
-      alert('PDF export is temporarily unavailable. Please check your connection and try again.');
-      return;
-    }
-
-    const safeCode = (dom.studentCodeDisplay.textContent || 'student').trim().replace(/[^\w-]+/g, '_');
-    const fileName = `CourseTrack_Report_${safeCode}.pdf`;
-
-    dom.downloadPdfBtn.disabled = true; // prevent double-clicks while generating
-
-    // Build the clone: a standalone copy of #results that the student
-    // never sees, so capturing it can never visibly affect the live page.
-    const clone = dom.results.cloneNode(true);
-    const cloneToolbar = clone.querySelector('.results-toolbar');
-    if (cloneToolbar) cloneToolbar.remove(); // never show the Download button in its own PDF
-
-    const wrapper = document.createElement('div');
-    wrapper.id = 'pdf-clone-container';
-    // Positioning is set inline (not via CSS) so it is guaranteed to
-    // apply the instant the element exists, keeping it fully off the
-    // visible page the whole time it's attached.
-    wrapper.style.position = 'absolute';
-    wrapper.style.left = '-9999px';
-    wrapper.style.top = '0';
-    wrapper.style.width = '794px'; // standard A4 width at 96 DPI
-    wrapper.appendChild(clone);
-    document.body.appendChild(wrapper);
-
-    try {
-      await waitForLayoutToSettle(150);
-
-      const options = {
-        margin: 10,
-        filename: fileName,
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: {
-          scale: 2,
-          useCORS: true,
-          logging: false,
-          scrollX: 0,
-          scrollY: 0,
-          backgroundColor: '#ffffff',
-          // NOTE: no `windowWidth` here — that option was what caused
-          // the previous horizontal-offset bug. The clone already has
-          // an explicit, fixed width, so there is nothing to simulate.
-        },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-        pagebreak: {
-          mode: ['css', 'legacy'],
-          avoid: ['.timeline-item', '.tl-field', '.final-item', '.profile-card'],
-        },
-      };
-
-      await html2pdf().set(options).from(wrapper).save();
-    } catch (err) {
-      console.error('CourseTrack — PDF export failed:', err);
-      alert('Something went wrong generating the PDF. Please try again.');
-    } finally {
-      wrapper.remove(); // always clean up, success or failure — the clone must never linger in the live DOM
-      dom.downloadPdfBtn.disabled = false;
-    }
-  }
 
   function initDownloadPdf() {
     if (!dom.downloadPdfBtn) return; // safe no-op if the button isn't on the page
-    dom.downloadPdfBtn.addEventListener('click', downloadReportCardPdf);
+    dom.downloadPdfBtn.addEventListener('click', () => window.print());
   }
 
   /* =====================================================================
