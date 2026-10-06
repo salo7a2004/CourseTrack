@@ -639,7 +639,34 @@
 <body></body>
 </html>`);
       frameDoc.close();
+
+      // Report banner + footer — the only genuinely new markup this
+      // feature needs (everything else reuses the real #results DOM).
+      // Built from CONFIG rather than hardcoded, so it stays correct if
+      // the course/organization branding ever changes.
+      const courseName = CONFIG.courseName || 'Student Academic Report';
+      const primaryOrgName = (CONFIG.organizations && CONFIG.organizations.primary && CONFIG.organizations.primary.name) || '';
+      const reportDate = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+
+      const header = frameDoc.createElement('div');
+      header.className = 'print-header';
+      header.innerHTML = `
+        <div>
+          <div class="print-header__title">CourseTrack — Student Academic Report</div>
+          <div class="print-header__subtitle">${escapeHtml(courseName)} · Generated automatically via Student Portal</div>
+        </div>
+        <div class="print-header__date">${reportDate}</div>
+      `;
+
+      const footer = frameDoc.createElement('div');
+      footer.className = 'print-footer';
+      footer.textContent = primaryOrgName
+        ? `This is an official computer-generated academic document, issued by ${primaryOrgName}.`
+        : 'This is an official computer-generated academic document.';
+
+      frameDoc.body.appendChild(header);
       frameDoc.body.appendChild(resultsClone);
+      frameDoc.body.appendChild(footer);
 
       // 3. The iframe is a separate document, so it only has style.css's
       //    DEFAULT brand colors — mirror the same runtime override

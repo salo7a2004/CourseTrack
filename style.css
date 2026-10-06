@@ -508,6 +508,18 @@ img, svg { display: block; }
 .btn--ghost:disabled { opacity: 0.6; cursor: progress; }
 
 @media print {
+  /* Slate/navy report palette — kept local to @media print so it never
+     affects the live, on-screen theme. Text colors are reused from the
+     real --success/--danger/--warning variables further down (not
+     redefined here) so printed status colors always exactly match what
+     the student sees on screen. */
+  :root {
+    --print-ink: #0f172a;
+    --print-muted: #64748b;
+    --print-border: #e2e8f0;
+    --print-header-bg: #f8fafc;
+  }
+
   /* Hide every non-printable UI element — chrome, controls, and
      anything that isn't part of the report itself. */
   header, footer, button,
@@ -515,10 +527,13 @@ img, svg { display: block; }
     display: none !important;
   }
 
-  /* Flat, ink-friendly page: no gradient background, no glass shadows. */
+  /* Flat, ink-friendly page: no gradient background, no glass shadows,
+     clean executive-report typography. */
   body {
     background: #ffffff !important;
-    color: #000000 !important;
+    color: var(--print-ink) !important;
+    font-family: var(--font-body), 'Segoe UI', Tahoma, sans-serif !important;
+    line-height: 1.5 !important;
   }
 
   #results {
@@ -527,26 +542,79 @@ img, svg { display: block; }
     padding: 0 !important;
   }
 
-  /* Every card loses its glassmorphism (backdrop-filter doesn't serve
-     any purpose on a printed/PDF page, and a plain border reads better
-     on paper anyway) and its on-screen shadow, replaced with a simple
-     1px border so cards stay visually separated. */
+  /* ---- Report banner + footer (markup injected by student.js) ---- */
+  .print-header {
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: flex-end !important;
+    gap: 16px;
+    padding-bottom: 16px;
+    margin-bottom: 24px;
+    border-bottom: 2px solid var(--print-border);
+  }
+  .print-header__title {
+    font-family: var(--font-display), sans-serif !important;
+    font-size: 18px; font-weight: 700; color: var(--print-ink);
+  }
+  .print-header__subtitle { font-size: 12px; color: var(--print-muted); margin-top: 3px; }
+  .print-header__date { font-size: 12px; color: var(--print-muted); white-space: nowrap; }
+
+  .print-footer {
+    margin-top: 30px; padding-top: 12px;
+    border-top: 1px dashed var(--print-border);
+    text-align: center; font-size: 11px; color: var(--print-muted);
+  }
+
+  /* ---- Section titles: accented, like a report's own headings ---- */
+  .section-title {
+    font-size: 15px !important;
+    color: #1e3a8a !important;
+    padding-left: 10px;
+    border-left: 4px solid var(--color-primary);
+  }
+  .section-title svg { display: none !important; } /* icons read as UI chrome on paper, not report content */
+
+  /* ---- Cards: muted header strip, subtle border, no glass/shadow ---- */
   .glass-card, .timeline-item, .final-item, .tl-field {
     background: #ffffff !important;
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
     box-shadow: none !important;
-    border: 1px solid #e0e0e0 !important;
+    border: 1px solid var(--print-border) !important;
+    border-radius: 10px !important;
   }
+
+  .profile-card { background: var(--print-header-bg) !important; } /* the one "header" card on the report */
+  .timeline-item__header { border-bottom: 1px solid var(--print-border); padding-bottom: 8px; margin-bottom: 12px !important; }
+
+  /* ---- Badges & metrics: soft pill backgrounds instead of plain text.
+     Background tints are fixed print-only colors; the TEXT stays the
+     real --success/--danger/--warning/--text-muted so a status always
+     reads as the exact same color on screen and on paper. ---- */
+  .tl-field__value, .final-item__value {
+    display: inline-block !important;
+    padding: 3px 10px !important;
+    border-radius: 999px !important;
+    font-size: 12.5px !important;
+  }
+  /* .profile-badge is intentionally untouched — it already has correct
+     flex-based pill styling on screen (icon + text in a row); adding it
+     to the rule above would have forced display:inline-block and broken
+     that icon alignment. */
+  .status-positive { background: #dcfce7 !important; color: var(--success) !important; }
+  .status-negative { background: #ffe4e6 !important; color: var(--danger) !important; }
+  .status-neutral,
+  .status-pending { background: #fef3c7 !important; color: var(--warning) !important; }
 
   /* The atomic units that must never be sliced across a page break.
      Deliberately NOT applied to .final-grid/.timeline/#final-section
      themselves — avoiding break-inside on the whole grid/section would
      force it onto a single page as one block, which can leave a large
      blank gap instead of flowing naturally from card to card. */
-  .glass-card, .timeline-item, .final-item, .tl-field, .profile-card {
+  .glass-card, .timeline-item, .final-item, .tl-field, .profile-card,
+  .print-header {
     page-break-inside: avoid !important;
     break-inside: avoid !important;
-    margin-bottom: 15px !important;
+    margin-bottom: 16px !important;
   }
 }
