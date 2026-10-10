@@ -1,63 +1,103 @@
-# CourseTrack — One-Time Setup
+# CourseTrack — One-Time Setup (Firebase Realtime Database)
 
 This project has two pages:
 
 - **index.html** — public Student Portal (search-only, read-only)
 - **admin.html** — private Admin Dashboard (upload only, `noindex` — don't link to it from anywhere public)
 
-Both pages read/write a single Google Sheet through a small bridge script
-that Google hosts for you for free. You never run or maintain a server.
+Both talk straight to your Firebase Realtime Database over its REST API
+(plain `fetch`, no SDK, no server of your own).
 
-## 1. Create the Google Sheet
-Create a new, blank Google Sheet. You don't need to add any columns —
-the bridge script creates its own tab automatically on first upload.
+## How the data is stored
 
-## 2. Add the bridge script
-1. In the Sheet, open **Extensions → Apps Script**.
-2. Delete the placeholder code and paste in the entire contents of
-   `google-apps-script.gs` (included in this project).
-3. Near the top, change:
-   ```js
-   const ADMIN_TOKEN = 'REPLACE_WITH_YOUR_OWN_SECRET_TOKEN';
-   ```
-   to any long, hard-to-guess string of your own.
+```
+/students   <- one record per student, keyed by student code
+  SD26-001: { Code: "SD26-001", Name: "...", M1: 1, T1: 9, ... }
+  SD26-002: { ... }
+/meta       <- { lastUpdate, studentsWritten }  (shown on the Admin dashboard)
+```
 
-## 3. Deploy it as a Web App
-1. Click **Deploy → New deployment**.
-2. Type: **Web app**.
-3. Execute as: **Me**.
-4. Who has access: **Anyone**.
-5. Click **Deploy**, then approve the permissions Google asks for.
-6. Copy the **Web app URL** it gives you (ends in `/exec`).
+An Admin upload does a full `PUT` of `/students`, so it **replaces** every
+previous record. Student codes containing `. # $ [ ] /` are stored with
+those characters changed to `_` in the key only (the original code is
+kept inside the record, so searching still works).
 
-## 4. Connect config.js
-Open `config.js` and fill in the two values under `sheetsApi`:
+## 1. Create the database
+1. Firebase console -> your project -> **Build -> Realtime Database -> Create database**.
+2. Copy the database root URL, e.g. `https://your-project-default-rtdb.firebaseio.com`.
 
+## 2. Connect config.js
 ```js
-sheetsApi: {
-  endpoint: 'PASTE_YOUR_WEB_APP_URL_HERE',
-  adminToken: 'THE_SAME_SECRET_YOU_SET_IN_STEP_2',
+firebase: {
+  databaseURL: 'https://your-project-default-rtdb.firebaseio.com', // root only - no /students.json
+  databaseSecret: '',  // see "Securing writes" below
 },
 ```
 
-Both `index.html` (via `student.js`) and `admin.html` (via `admin.js`)
-read this same file — nothing else needs to change.
+## 3. Securing writes (read this before going live)
 
-## 5. Upload your first Excel file
-Open `admin.html`, drag in your `.xlsx` file, and watch the step
-indicator: Uploading → Reading → Processing → Syncing → Finished. Once
-it says **Active**, open `index.html` and search any student code from
-that file — no redeploy, no republish, just refresh.
+Students only ever **read**, but the Admin page has to **write**, and a
+static website has nowhere to hide a credential. Everything in
+`config.js` is a public file anyone can open. Pick one:
+
+**Option A - recommended for a public site: Firebase Authentication.**
+Rules that only let one signed-in admin account write:
+```json
+{
+  "rules": {
+    "students": { ".read": true, ".write": "auth != null && auth.token.email === 'you@example.com'" },
+    "meta":     { ".read": true, ".write": "auth != null && auth.token.email === 'you@example.com'" }
+  }
+}
+```
+This needs a small sign-in step added to `admin.html`/`admin.js`
+(email + password, via Firebase's REST sign-in endpoint) - not included
+yet. It is the only option here that is genuinely secure when
+`admin.html` is on a public URL.
+
+**Option B - works today, no code change: public read, locked writes, and
+keep the secret OFF the internet.**
+1. Rules:
+   ```json
+   {
+     "rules": {
+       "students": { ".read": true, ".write": false },
+       "meta":     { ".read": true, ".write": false }
+     }
+   }
+   ```
+2. Get a Database Secret (Project settings -> Service accounts -> Database
+   secrets). Google treats these as legacy, so newer projects may not
+   offer one - use Option A then.
+3. Put the secret in `databaseSecret` **only in a copy of `config.js` on
+   your own computer**, and run uploads by opening your local
+   `admin.html` from disk. Deploy the version of `config.js` with
+   `databaseSecret: ''`.
+4. **Never** commit the secret to a public GitHub repo or publish it:
+   it is a full-admin credential that bypasses every rule, and anyone
+   who finds it can read, change, or delete the entire database.
+
+**Do not** use open write rules (`".write": true`) on a live site: the
+database URL is public in `config.js`, so anyone could overwrite or wipe
+every student record with a single request.
+
+## 4. Upload your first Excel file
+Open `admin.html`, drop in your `.xlsx`, and watch the steps:
+Uploading -> Reading -> Processing -> Syncing to Firebase -> Finished. Then
+open `index.html` and search a student code - no redeploy needed.
+
+## Privacy note
+With public read on `/students`, the Student Portal downloads every
+record and filters in the browser, so anyone who opens
+`https://<your-project>.firebaseio.com/students.json` directly can see
+all names, emails and grades - not just their own. (The old Google Sheets
+bridge behaved the same way.) If that matters, the fix is to allow reads
+only on individual records (rules `"students": { "$code": { ".read": true } }`)
+and look students up by key instead of fetching the whole list.
 
 ## Notes
-- **Security**: `ADMIN_TOKEN` is a shared secret, not real login
-  authentication — anyone who reads `admin.js`'s source could see it.
-  This is an inherent limit of a purely static site with no server of
-  its own. For stronger protection, set "Who has access" to **Only
-  myself** in step 3, and only open `admin.html` while signed into the
-  Google account that owns the Sheet.
-- **Re-deploying the script**: if you edit `google-apps-script.gs` later,
-  choose **Deploy → Manage deployments → Edit → New version** so the
-  same URL picks up your changes.
-- Keep `admin.html` unlinked from any public navigation — it's only
-  reachable by whoever has the direct URL.
+- The old Google Apps Script bridge is gone - `google-apps-script.gs`
+  is no longer used and has been removed from the project; you can also
+  delete the Apps Script deployment in your Google account.
+- Requests time out after 15 s (student) / 30 s (admin) so a stalled
+  connection ends in an error message instead of an endless spinner.

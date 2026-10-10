@@ -88,7 +88,7 @@
       <!-- ---------- UPLOAD CARD ---------- -->
       <div class="glass-card admin-card">
         <h2 class="search-card__title">Upload Course Sheet</h2>
-        <p class="search-card__subtitle">Upload the <strong>.xlsx</strong> file. It will be parsed here, then pushed to the shared Google Sheet — every student sees it immediately.</p>
+        <p class="search-card__subtitle">Upload the <strong>.xlsx</strong> file. It will be parsed here, then saved to the Firebase database — every student sees it immediately.</p>
 
         <label for="file-input" id="dropzone" class="dropzone">
           <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3v12m0-12l-5 5m5-5l5 5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
@@ -101,7 +101,7 @@
           <div class="upload-step" data-step="upload"><span class="upload-step__dot"></span><span>Uploading…</span></div>
           <div class="upload-step" data-step="read"><span class="upload-step__dot"></span><span>Reading workbook…</span></div>
           <div class="upload-step" data-step="process"><span class="upload-step__dot"></span><span>Processing students…</span></div>
-          <div class="upload-step" data-step="sync"><span class="upload-step__dot"></span><span>Syncing to Google Sheets…</span></div>
+          <div class="upload-step" data-step="sync"><span class="upload-step__dot"></span><span>Syncing to Firebase…</span></div>
           <div class="upload-step" data-step="done"><span class="upload-step__dot"></span><span>Finished.</span></div>
         </div>
 

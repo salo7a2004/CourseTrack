@@ -656,3 +656,12 @@ img, svg { display: block; }
     margin-bottom: 16px !important;
   }
 }
+
+/* =======================================================================
+   21. Admin upload in progress — dropzone locked while Firebase sync runs
+   ======================================================================= */
+.dropzone.is-uploading {
+  opacity: 0.55;
+  pointer-events: none;
+  cursor: progress;
+}

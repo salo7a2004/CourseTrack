@@ -1,15 +1,19 @@
 /* =====================================================================
    COURSETRACK — ADMIN DASHBOARD LOGIC
    Private page. This is the ONLY place data can be written — it parses
-   the uploaded .xlsx client-side with SheetJS, then POSTs the resulting
-   grid to the Google Sheets bridge (google-apps-script.gs), which is
-   the single source of truth the Student Portal reads from.
+   the uploaded .xlsx client-side with SheetJS, then PUTs the resulting
+   records to the Firebase Realtime Database REST endpoint, which is the
+   single source of truth the Student Portal reads from.
    ===================================================================== */
 
 (() => {
   'use strict';
 
   const CONFIG = window.APP_CONFIG || {};
+
+  // Longest any single Firebase request may take before it is aborted
+  // and reported as an error (writes carry the whole dataset).
+  const FIREBASE_TIMEOUT_MS = 30000;
 
   const ERRORS = {
     UNSUPPORTED_FILE: 'Unsupported file.',
@@ -242,12 +246,12 @@
           // simply skipped rather than misread as data.
           const headers = rows[headerRowIndex].map((h) => String(h == null ? '' : h).trim());
 
-          // Google Sheets' setValues() requires every row to have EXACTLY
-          // headers.length columns, or the write fails outright. A raw
-          // .xlsx can occasionally have a stray value in a column past the
-          // header row's last column (or a short row) — pad/truncate every
-          // row here so the payload sent to Apps Script is always
-          // rectangular, regardless of what the source file looked like.
+          // A raw .xlsx can occasionally have a stray value in a column
+          // past the header row's last column (or a short row). Pad/
+          // truncate every row to exactly headers.length cells so that
+          // zipping each row into a { header: value } record (see
+          // pushToFirebase) always yields the same keys for every
+          // student, regardless of what the source file looked like.
           const dataRows = rows.slice(headerRowIndex + 1).map((row) => {
             const normalized = row.slice(0, headers.length);
             while (normalized.length < headers.length) normalized.push('');
@@ -297,54 +301,141 @@
   }
 
   /* =====================================================================
-     GOOGLE SHEETS SYNC
+     FIREBASE REALTIME DATABASE SYNC
      ===================================================================== */
 
-  function getEndpoint() {
-    const endpoint = CONFIG.sheetsApi && CONFIG.sheetsApi.endpoint;
-    if (!endpoint || endpoint.startsWith('PASTE_')) {
-      throw new Error('Google Sheets endpoint is not configured yet — set sheetsApi.endpoint in config.js.');
+  /** Builds the two REST endpoints this app ever talks to, from the
+   *  single configured project root. */
+  function getFirebaseUrls() {
+    const databaseURL = CONFIG.firebase && CONFIG.firebase.databaseURL;
+    if (!databaseURL || /PASTE_|YOUR_/i.test(databaseURL)) {
+      throw new Error('Firebase database URL is not configured yet — set firebase.databaseURL in config.js.');
     }
-    return endpoint;
+    const root = databaseURL.replace(/\/+$/, ''); // strip any trailing slash
+    return { studentsUrl: `${root}/students.json`, metaUrl: `${root}/meta.json` };
   }
 
-  async function pushToSheets(headers, rows) {
-    const endpoint = getEndpoint();
-    const token = (CONFIG.sheetsApi && CONFIG.sheetsApi.adminToken) || '';
+  function appendAuthParam(url) {
+    const secret = CONFIG.firebase && CONFIG.firebase.databaseSecret;
+    if (!secret) return url;
+    return `${url}${url.includes('?') ? '&' : '?'}auth=${encodeURIComponent(secret)}`;
+  }
+
+  /**
+   * One small helper for every Firebase REST call (GET/PUT), with
+   * consistent network/permission error handling so neither call site
+   * below has to repeat it.
+   */
+  async function firebaseRequest(url, method, body) {
+    // Every request is guaranteed to settle: a stalled connection would
+    // otherwise leave the upload steps (and the locked dropzone) hanging
+    // forever, since `finally` only runs once the request settles.
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), FIREBASE_TIMEOUT_MS);
 
     let response;
+    let data = null;
     try {
-      response = await fetch(endpoint, {
-        method: 'POST',
-        // text/plain avoids a CORS preflight that Apps Script Web Apps
-        // don't handle — the script still parses this body as JSON.
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ token, headers, rows }),
-      });
-    } catch (err) {
-      throw new Error('Could not reach the Google Sheets endpoint. Check your internet connection and try again.');
+      try {
+        response = await fetch(appendAuthParam(url), {
+          method,
+          headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+          body: body !== undefined ? JSON.stringify(body) : undefined,
+          signal: controller.signal,
+        });
+      } catch (err) {
+        throw new Error(
+          err && err.name === 'AbortError'
+            ? 'Firebase took too long to respond. Please try again.'
+            : 'Could not reach the Firebase database. Check your internet connection and try again.'
+        );
+      }
+
+      try {
+        data = await response.json();
+      } catch (err) {
+        if (err && err.name === 'AbortError') throw new Error('Firebase took too long to respond. Please try again.');
+        /* otherwise: a successful PUT can legitimately return an empty/non-JSON body */
+      }
+    } finally {
+      window.clearTimeout(timeoutId);
     }
 
-    let payload;
-    try {
-      payload = await response.json();
-    } catch (err) {
-      throw new Error('The Google Sheets endpoint returned an unreadable response.');
+    if (!response.ok || (data && data.error)) {
+      const reason = (data && data.error) || `HTTP ${response.status}`;
+      if (response.status === 401 || response.status === 403 || /permission/i.test(reason)) {
+        throw new Error('Firebase denied this request — check firebase.databaseSecret in config.js and your database rules.');
+      }
+      throw new Error(`Firebase request failed: ${reason}`);
     }
 
-    if (!payload || payload.success === false) {
-      throw new Error((payload && payload.error) || 'The Google Sheets endpoint reported an error.');
-    }
-
-    return payload;
+    return data;
   }
 
+  /** Firebase RTDB keys may not contain . $ # [ ] / or ASCII control
+   *  characters, and must not be empty. */
+  function sanitizeFirebaseKey(rawKey) {
+    const cleaned = String(rawKey).trim().replace(/[.#$[\]/\x00-\x1F\x7F]/g, '_');
+    return cleaned || `row_${Math.random().toString(36).slice(2, 10)}`;
+  }
+
+  /**
+   * Replaces the Firebase `/students` node wholesale with the freshly
+   * parsed workbook — a full overwrite, exactly matching the project's
+   * established "an Admin upload replaces everything" behavior.
+   *
+   * Written as an OBJECT keyed by each student's (sanitized) code, not
+   * a plain array: Firebase's own documentation specifically recommends
+   * against storing arrays in the Realtime Database (they're internally
+   * re-encoded in ways that get awkward with sparse/non-sequential
+   * data). Keying by code also means re-uploading the same student
+   * cleanly overwrites their one record instead of ever appending a
+   * duplicate.
+   */
+  async function pushToFirebase(headers, rows) {
+    const { studentsUrl, metaUrl } = getFirebaseUrls();
+
+    const codeColIndex = headers.findIndex((h) => /code/i.test(String(h).trim()));
+    if (codeColIndex === -1) throw new Error(ERRORS.CODE_NOT_FOUND);
+
+    const payload = {};
+    rows.forEach((row) => {
+      const code = String(row[codeColIndex] || '').trim();
+      if (!code) return; // parseExcelFile already guarantees the sheet has a Code column; an individual row can still be blank
+      const rowObject = {};
+      headers.forEach((header, c) => { rowObject[header] = row[c]; });
+      payload[sanitizeFirebaseKey(code)] = rowObject;
+    });
+
+    const studentsWritten = Object.keys(payload).length;
+    if (!studentsWritten) throw new Error(ERRORS.CODE_NOT_FOUND);
+
+    await firebaseRequest(studentsUrl, 'PUT', payload);
+
+    const lastUpdate = new Date().toISOString();
+    await firebaseRequest(metaUrl, 'PUT', { lastUpdate, studentsWritten });
+
+    return { lastUpdate, studentsWritten };
+  }
+
+  /** Reads the current /students and /meta nodes for the Statistics
+   *  panel shown when the Admin Dashboard first loads. */
   async function fetchCurrentStats() {
-    const endpoint = getEndpoint();
-    const response = await fetch(endpoint, { method: 'GET', cache: 'no-store' });
-    const payload = await response.json();
-    if (!payload || payload.success === false) throw new Error((payload && payload.error) || 'Could not load current stats.');
-    return payload;
+    const { studentsUrl, metaUrl } = getFirebaseUrls();
+    const [studentsData, metaData] = await Promise.all([
+      firebaseRequest(studentsUrl, 'GET'),
+      firebaseRequest(metaUrl, 'GET'),
+    ]);
+
+    const rows = studentsData ? Object.values(studentsData) : [];
+    const headerSet = new Set();
+    rows.forEach((row) => Object.keys(row).forEach((k) => headerSet.add(k)));
+
+    return {
+      headers: Array.from(headerSet),
+      rows,
+      lastUpdate: metaData ? metaData.lastUpdate : null,
+    };
   }
 
   /* =====================================================================
@@ -418,6 +509,10 @@
   }
 
   async function handleFile(file) {
+    // Drag-and-drop calls this directly (bypassing the disabled <input>),
+    // so an in-flight upload has to be guarded against here too.
+    if (dom.dropzone.classList.contains('is-uploading')) return;
+
     resetBanners();
     if (!file) return;
 
@@ -429,6 +524,13 @@
     dom.uploadSteps.hidden = false;
     markStepsUpTo('upload');
 
+    // The dropzone is the only upload trigger on this page, so locking
+    // it is the equivalent of disabling an "Upload" button: it stops a
+    // second file being dropped mid-upload and visibly signals work in
+    // progress. Restored unconditionally in `finally` below.
+    dom.dropzone.classList.add('is-uploading');
+    dom.fileInput.disabled = true;
+
     try {
       await wait(150);
       markStepsUpTo('read');
@@ -439,7 +541,7 @@
       updateStatsDisplay({ fileName: file.name, headers, students: rows.length, status: 'Processing…' });
 
       markStepsUpTo('sync');
-      const result = await pushToSheets(headers, rows);
+      const result = await pushToFirebase(headers, rows);
 
       markStepsUpTo('done');
       setStep('done', 'done');
@@ -458,6 +560,8 @@
       showErrorBanner((err && err.message) || ERRORS.INVALID_EXCEL);
     } finally {
       dom.fileInput.value = '';
+      dom.fileInput.disabled = false;
+      dom.dropzone.classList.remove('is-uploading');
     }
   }
 

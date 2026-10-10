@@ -1,8 +1,8 @@
 /* =====================================================================
    COURSETRACK — STUDENT PORTAL LOGIC
    Public, read-only. Every search fetches the latest data straight from
-   the Google Sheets bridge (google-apps-script.gs) — nothing is cached
-   in localStorage, so students always see whatever the Admin last
+   the Firebase Realtime Database REST endpoint — nothing is cached in
+   localStorage, so students always see whatever the Admin last
    uploaded, with no redeploy needed.
 
    Column detection (Meeting/Task/Notes/Final) is 100% structural:
@@ -19,6 +19,10 @@
      0. CONSTANTS
      ------------------------------------------------------------------- */
   const STORAGE_KEYS = { THEME: 'coursetrack_theme' };
+
+  // Longest a search is allowed to wait on Firebase before giving up
+  // with an error instead of spinning indefinitely.
+  const FETCH_TIMEOUT_MS = 15000;
 
   const KEYWORDS = {
     positive: ['present', 'attended', 'yes', 'pass', 'passed', 'eligible', 'completed', 'complete', 'done', 'excellent', 'good', 'success', 'active'],
@@ -230,72 +234,129 @@
   }
 
   /* =====================================================================
-     5. GOOGLE SHEETS DATA FETCH — always the latest, never cached
+     5. FIREBASE DATA FETCH — always the latest, never cached
      ===================================================================== */
 
   /**
-   * Fetches the current sheet contents from the Apps Script bridge and
-   * converts the raw {headers, rows} grid into row objects, exactly
-   * like SheetJS's sheet_to_json — so the rest of the app never has to
-   * care whether data came from a live Sheet or a local file.
+   * Builds the /students.json REST endpoint from the single configured
+   * project root.
+   *
+   * Deliberately sends NO credential of any kind. config.js is loaded
+   * by this public page, so anything in it is visible to every student
+   * — the Student Portal must work purely off database rules that
+   * allow public READ of /students (see SETUP.md). The admin-only
+   * databaseSecret is never read here.
+   */
+  function getStudentsUrl() {
+    const databaseURL = CONFIG.firebase && CONFIG.firebase.databaseURL;
+    if (!databaseURL || /PASTE_|YOUR_/i.test(databaseURL)) {
+      throw new Error('The course data source is not configured yet. Ask your instructor to finish the Firebase setup.');
+    }
+    return `${databaseURL.replace(/\/+$/, '')}/students.json`;
+  }
+
+  /**
+   * Fetches every student record straight from Firebase. The admin
+   * upload stores them as an OBJECT keyed by student code (never an
+   * array), so Object.values() turns that back into a plain list of
+   * { header: value } records — the same shape the rest of this file
+   * already works with, regardless of where data originally came from.
    */
   async function fetchCourseData() {
-    const endpoint = CONFIG.sheetsApi && CONFIG.sheetsApi.endpoint;
-    if (!endpoint || endpoint.startsWith('PASTE_')) {
-      throw new Error('The course data source is not configured yet. Ask your instructor to finish the Google Sheets setup.');
-    }
+    const url = getStudentsUrl();
+
+    // A `finally` block only runs once the request SETTLES — a stalled
+    // connection that never answers would otherwise leave the spinner
+    // going forever. The timeout guarantees every request settles.
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
     let response;
     try {
-      response = await fetch(endpoint, { method: 'GET', cache: 'no-store' });
+      response = await fetch(url, { method: 'GET', cache: 'no-store', signal: controller.signal });
     } catch (err) {
-      throw new Error('Could not reach the course data source. Check your internet connection and try again.');
+      window.clearTimeout(timeoutId);
+      throw new Error(
+        err && err.name === 'AbortError'
+          ? 'The course data source took too long to respond. Please try again.'
+          : 'Could not reach the course data source. Check your internet connection and try again.'
+      );
     }
 
-    if (!response.ok) {
-      throw new Error('The course data source returned an error. Please try again shortly.');
-    }
-
-    let payload;
+    // The abort timer stays armed through the body read below too — a
+    // response whose body stalls mid-download must also settle.
+    let data;
     try {
-      payload = await response.json();
+      if (!response.ok) {
+        throw new Error(
+          response.status === 401 || response.status === 403
+            ? 'Access to the course data source was denied. Ask your instructor to check the database configuration.'
+            : 'The course data source returned an error. Please try again shortly.'
+        );
+      }
+      data = await response.json();
     } catch (err) {
-      throw new Error('The course data source returned an unreadable response.');
+      if (err && err.name === 'AbortError') {
+        throw new Error('The course data source took too long to respond. Please try again.');
+      }
+      if (err instanceof SyntaxError) {
+        throw new Error('The course data source returned an unreadable response.');
+      }
+      throw err;
+    } finally {
+      window.clearTimeout(timeoutId);
     }
 
-    if (!payload || payload.success === false) {
-      throw new Error((payload && payload.error) || 'The course data source reported an error.');
+    if (data && data.error) {
+      throw new Error(String(data.error));
     }
 
-    const headers = payload.headers || [];
-    const rawRows = payload.rows || [];
-
-    if (!headers.length) {
+    // Firebase returns `null` for an empty node. Records are filtered to
+    // plain objects defensively, in case something non-record was ever
+    // written under /students by hand.
+    const rows = data ? Object.values(data).filter((r) => r && typeof r === 'object') : [];
+    if (!rows.length) {
       throw new Error('No course data has been uploaded yet. Please check back later.');
     }
 
-    const rows = rawRows.map((rowArray) => {
-      const row = {};
-      headers.forEach((header, i) => { row[header] = rowArray[i] !== undefined ? rowArray[i] : ''; });
-      return row;
-    });
+    // Union of every key across every record — not just the first
+    // row's — so a record that is missing a column (or has an extra
+    // one) can never cause that column to silently go undetected.
+    const headerSet = new Set();
+    rows.forEach((row) => Object.keys(row).forEach((key) => headerSet.add(key)));
+    const headers = Array.from(headerSet);
 
     const columns = detectColumns(headers);
+
+    // Last-resort fallback only. detectColumns already recognizes any
+    // header containing "code", "كود", "رقم الطالب" or "id" — which
+    // covers `code`, `student_code`, `الكود` and combined headers like
+    // "Student Code (الكود)". This is reached only for data that never
+    // went through the Admin upload (e.g. a record typed by hand
+    // straight into the Firebase console under an unusual key).
+    if (!columns.code) {
+      const fallbackNames = ['code', 'student_code', 'studentcode', 'الكود'];
+      columns.code = headers.find((h) => fallbackNames.includes(String(h).trim().toLowerCase())) || null;
+    }
+
+    // Every identifier is trimmed here, and the search input is trimmed
+    // and lower-cased in handleSearch, so stray spaces on either side
+    // can never cause a false "not found".
     const students = rows
       .filter((row) => columns.code && String(row[columns.code]).trim() !== '')
       .map((row) => ({ code: String(row[columns.code]).trim(), raw: row }));
 
-    console.group('%cCourseTrack — Google Sheets fetch debug', 'color:#2f98e0;font-weight:700;');
+    console.group('%cCourseTrack — Firebase fetch debug', 'color:#f59e0b;font-weight:700;');
     console.log('Detected column headers:', headers);
     console.log('Code column:', columns.code, '| Name column:', columns.name, '| Email column:', columns.email);
     console.log('Meeting columns:', columns.meetings);
     console.log('Task columns:', columns.tasks);
     console.log('Notes columns:', columns.notes);
     console.log('Final result columns:', columns.final);
-    console.log(`Parsed ${students.length} student row(s). Last updated:`, payload.lastUpdate);
+    console.log(`Parsed ${students.length} student record(s).`);
     console.groupEnd();
 
-    return { columns, students, lastUpdate: payload.lastUpdate };
+    return { columns, students };
   }
 
   /* =====================================================================

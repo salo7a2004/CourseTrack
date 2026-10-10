@@ -4,7 +4,7 @@
    The ONE file to edit for branding and data-source settings. Neither
    index.html, admin.html, style.css, student.js nor admin.js should ever
    need to change when you rebrand the portal or point it at a new
-   Google Sheet — everything flows from here.
+   Firebase project — everything flows from here.
    ===================================================================== */
 
 window.APP_CONFIG = {
@@ -12,7 +12,7 @@ window.APP_CONFIG = {
   courseName: 'Engineering Fundamentals Program',
   courseSubtitle: 'Student Portal',
   instructorName: 'Add instructor name',
-  appVersion: 'v5.0.0',
+  appVersion: 'v6.0.0',
 
   // ---- Theme ------------------------------------------------------------
   // Light Mode is always the default regardless of this value or the
@@ -48,16 +48,25 @@ window.APP_CONFIG = {
     developedBy: 'Developed by Salah Hossam',
   },
 
-// ---- Google Sheets bridge -----------------------------------------------
-  // This is what makes Google Sheets the single source of truth:
-  //   • student.js sends GET requests here to read the live data.
-  //   • admin.js sends POST requests here to overwrite it after an upload.
-  // Both requests hit the same Google Apps Script Web App URL — see
-  // google-apps-script.gs and SETUP.md for the one-time setup.
-  sheetsApi: {
-    endpoint: 'https://script.google.com/macros/s/AKfycbwqFY2dDdLsbcMrBlHBcf2oIIBuimT1YZ7DbnDqSRnf30r-7e-Kx4F5SxKQQgdnVhuduA/exec',
-    // Must exactly match ADMIN_TOKEN inside google-apps-script.gs.
-    // Only used by admin.html — never sent or exposed to students.
-    adminToken: 'MyNewSecretToken2026',
+  // ---- Firebase Realtime Database ----------------------------------------
+  // This is what makes Firebase the single source of truth:
+  //   • student.js sends GET requests to  {databaseURL}/students.json
+  //   • admin.js   sends PUT requests to  {databaseURL}/students.json
+  //     (a full overwrite — exactly what a fresh Excel upload should do)
+  //     plus {databaseURL}/meta.json for the Last Update timestamp the
+  //     Admin Dashboard's Statistics panel shows.
+  // databaseURL is the project ROOT — no trailing slash, no /students.json
+  // on the end. Both paths above are built from it in code, so this is
+  // the only place a Firebase project ever needs to be configured.
+  firebase: {
+    databaseURL: 'https://d-scholarship-default-rtdb.firebaseio.com',
+    // ADMIN-ONLY and OPTIONAL — read by admin.js, never by student.js.
+    // WARNING: this file is a public static file, so anything placed
+    // here is downloadable by anyone who opens it, and a Firebase
+    // Database Secret is a FULL-ADMIN credential that bypasses every
+    // database rule. Do NOT commit a real secret to a public GitHub repo
+    // or publish it on a public site. Prefer leaving this blank and
+    // using the safer options explained in SETUP.md ("Securing writes").
+    databaseSecret: '',
   },
 };
