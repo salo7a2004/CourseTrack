@@ -10,16 +10,24 @@
   'use strict';
 
   const CONFIG = window.APP_CONFIG || {};
+  const I18N = window.I18N; // i18n.js MUST be loaded before this file (see admin.html)
+
+  // ISO timestamp of the last upload, kept so the "Last Update" tile can be
+  // re-formatted in the new language when the language is switched.
+  let lastUpdateIso = null;
 
   // Longest any single Firebase request may take before it is aborted
   // and reported as an error (writes carry the whole dataset).
   const FIREBASE_TIMEOUT_MS = 30000;
 
+  // Dictionary KEYS (see i18n.js) — not display strings — so every error
+  // is shown in the current language and re-translates if the language
+  // is switched while it is on screen.
   const ERRORS = {
-    UNSUPPORTED_FILE: 'Unsupported file.',
-    INVALID_EXCEL: 'Invalid Excel file.',
-    SHEET_NOT_FOUND: 'No worksheet with actual student Code values was found in this workbook.',
-    CODE_NOT_FOUND: 'Code column not found.',
+    UNSUPPORTED_FILE: 'err.unsupportedFile',
+    INVALID_EXCEL: 'err.invalidExcel',
+    SHEET_NOT_FOUND: 'err.sheetNotFound',
+    CODE_NOT_FOUND: 'err.codeNotFound',
   };
 
   const dom = {
@@ -85,8 +93,6 @@
 
   function applyBranding() {
     applyBrandColors();
-    dom.headerCourseName.textContent = CONFIG.courseName || 'CourseTrack';
-    dom.courseLogoPlaceholder.textContent = (CONFIG.courseName || 'C').trim().charAt(0).toUpperCase();
 
     const logos = CONFIG.logos || {};
     applyLogo(dom.courseLogoImg, dom.courseLogoPlaceholder, logos.course);
@@ -97,16 +103,35 @@
     if (orgs.primary && orgs.primary.name) { dom.orgNamePrimary.textContent = orgs.primary.name; dom.orgPlaceholderPrimary.textContent = orgs.primary.name; }
     if (orgs.partner && orgs.partner.name) { dom.orgNamePartner.textContent = orgs.partner.name; dom.orgPlaceholderPartner.textContent = orgs.partner.name; }
 
-    const footer = CONFIG.footerText || {};
-    if (footer.poweredBy) dom.footerPowered.textContent = footer.poweredBy;
-    if (footer.collaboration) dom.footerCollab.textContent = footer.collaboration;
-    if (footer.developedBy) {
-      const name = footer.developedBy.replace(/^Developed by\s*/i, '');
-      dom.footerDeveloped.innerHTML = `Developed by <strong>${escapeHtml(name)}</strong>`;
-    }
+    applyBrandText();
+  }
 
-    dom.infoCourseName.textContent = CONFIG.courseName || '—';
-    dom.infoInstructorName.textContent = CONFIG.instructorName || '—';
+  /** Language-dependent branding text. Runs at startup and again on every
+   *  language switch (logos stay in applyBranding so they don't reload). */
+  function applyBrandText() {
+    const courseName = I18N.cfgOr('courseName', null) || 'CourseTrack';
+    dom.headerCourseName.textContent = courseName;
+    dom.courseLogoPlaceholder.textContent = courseName.trim().charAt(0).toUpperCase();
+
+    const orgs = CONFIG.organizations || {};
+    const footer = CONFIG.footerText || {};
+    const isEn = I18N.getLang() === 'en';
+    const primaryName = (orgs.primary && orgs.primary.name) || '';
+    const partnerName = (orgs.partner && orgs.partner.name) || '';
+
+    // English keeps exactly what config.js says; Arabic uses the dictionary.
+    dom.footerPowered.textContent = isEn && footer.poweredBy
+      ? footer.poweredBy
+      : I18N.t('footer.poweredBy', { org: primaryName });
+    dom.footerCollab.textContent = isEn && footer.collaboration
+      ? footer.collaboration
+      : I18N.t('footer.collab', { org: partnerName });
+
+    const devName = (footer.developedBy || 'Salah Hossam').replace(/^Developed by\s*/i, '');
+    dom.footerDeveloped.innerHTML = `${escapeHtml(I18N.t('footer.developedBy'))} <strong><bdi>${escapeHtml(devName)}</bdi></strong>`;
+
+    dom.infoCourseName.textContent = courseName;
+    dom.infoInstructorName.textContent = I18N.cfgOr('instructorName', null) || '—';
     dom.infoVersion.textContent = CONFIG.appVersion || '—';
   }
 
@@ -211,7 +236,7 @@
     }
 
     if (!best || best.validRecordCount === 0) {
-      throw new Error(ERRORS.SHEET_NOT_FOUND);
+      throw I18N.error(ERRORS.SHEET_NOT_FOUND);
     }
 
     return { sheetName: best.sheetName, headerRowIndex: best.headerRowIndex };
@@ -220,25 +245,25 @@
   function parseExcelFile(file) {
     return new Promise((resolve, reject) => {
       if (typeof XLSX === 'undefined') {
-        reject(new Error('The Excel engine (SheetJS) failed to load. Check your internet connection and reload the page.'));
+        reject(I18N.error('err.sheetJsFailed'));
         return;
       }
       const reader = new FileReader();
-      reader.onerror = () => reject(new Error(ERRORS.INVALID_EXCEL));
+      reader.onerror = () => reject(I18N.error(ERRORS.INVALID_EXCEL));
       reader.onload = (event) => {
         let workbook;
         try {
           workbook = XLSX.read(new Uint8Array(event.target.result), { type: 'array' });
         } catch (err) {
-          reject(new Error(ERRORS.INVALID_EXCEL));
+          reject(I18N.error(ERRORS.INVALID_EXCEL));
           return;
         }
-        if (!workbook.SheetNames.length) { reject(new Error(ERRORS.INVALID_EXCEL)); return; }
+        if (!workbook.SheetNames.length) { reject(I18N.error(ERRORS.INVALID_EXCEL)); return; }
 
         try {
           const { sheetName, headerRowIndex } = pickSheet(workbook);
           const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '', header: 1 });
-          if (!rows.length) { reject(new Error(`The sheet "${sheetName}" is empty — add student rows and try again.`)); return; }
+          if (!rows.length) { reject(I18N.error('err.sheetEmpty', { sheet: sheetName })); return; }
 
           // Header row is wherever pickSheet actually found it — not
           // assumed to be row 1 — so any report/title rows above it
@@ -259,13 +284,13 @@
           });
 
           if (!headers.some((h) => /code/i.test(h.trim()))) {
-            reject(new Error(ERRORS.CODE_NOT_FOUND));
+            reject(I18N.error(ERRORS.CODE_NOT_FOUND));
             return;
           }
 
           resolve({ sheetName, headers, rows: dataRows });
         } catch (err) {
-          reject(err instanceof Error ? err : new Error(ERRORS.INVALID_EXCEL));
+          reject(err instanceof Error ? err : I18N.error(ERRORS.INVALID_EXCEL));
         }
       };
       reader.readAsArrayBuffer(file);
@@ -309,7 +334,7 @@
   function getFirebaseUrls() {
     const databaseURL = CONFIG.firebase && CONFIG.firebase.databaseURL;
     if (!databaseURL || /PASTE_|YOUR_/i.test(databaseURL)) {
-      throw new Error('Firebase database URL is not configured yet — set firebase.databaseURL in config.js.');
+      throw I18N.error('err.fbNotConfigured');
     }
     const root = databaseURL.replace(/\/+$/, ''); // strip any trailing slash
     return { studentsUrl: `${root}/students.json`, metaUrl: `${root}/meta.json` };
@@ -344,17 +369,13 @@
           signal: controller.signal,
         });
       } catch (err) {
-        throw new Error(
-          err && err.name === 'AbortError'
-            ? 'Firebase took too long to respond. Please try again.'
-            : 'Could not reach the Firebase database. Check your internet connection and try again.'
-        );
+        throw I18N.error(err && err.name === 'AbortError' ? 'err.fbTimeout' : 'err.fbNetwork');
       }
 
       try {
         data = await response.json();
       } catch (err) {
-        if (err && err.name === 'AbortError') throw new Error('Firebase took too long to respond. Please try again.');
+        if (err && err.name === 'AbortError') throw I18N.error('err.fbTimeout');
         /* otherwise: a successful PUT can legitimately return an empty/non-JSON body */
       }
     } finally {
@@ -364,9 +385,9 @@
     if (!response.ok || (data && data.error)) {
       const reason = (data && data.error) || `HTTP ${response.status}`;
       if (response.status === 401 || response.status === 403 || /permission/i.test(reason)) {
-        throw new Error('Firebase denied this request — check firebase.databaseSecret in config.js and your database rules.');
+        throw I18N.error('err.fbDenied');
       }
-      throw new Error(`Firebase request failed: ${reason}`);
+      throw I18N.error('err.fbFailed', { reason });
     }
 
     return data;
@@ -396,7 +417,7 @@
     const { studentsUrl, metaUrl } = getFirebaseUrls();
 
     const codeColIndex = headers.findIndex((h) => /code/i.test(String(h).trim()));
-    if (codeColIndex === -1) throw new Error(ERRORS.CODE_NOT_FOUND);
+    if (codeColIndex === -1) throw I18N.error(ERRORS.CODE_NOT_FOUND);
 
     const payload = {};
     rows.forEach((row) => {
@@ -408,7 +429,7 @@
     });
 
     const studentsWritten = Object.keys(payload).length;
-    if (!studentsWritten) throw new Error(ERRORS.CODE_NOT_FOUND);
+    if (!studentsWritten) throw I18N.error(ERRORS.CODE_NOT_FOUND);
 
     await firebaseRequest(studentsUrl, 'PUT', payload);
 
@@ -446,7 +467,7 @@
     if (!isoString) return '—';
     const date = new Date(isoString);
     if (Number.isNaN(date.getTime())) return '—';
-    return date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    return date.toLocaleString(I18N.locale(), { dateStyle: 'medium', timeStyle: 'short' });
   }
 
   function resetBanners() {
@@ -454,15 +475,18 @@
     dom.uploadError.hidden = true;
   }
 
-  function showSuccessBanner(message) {
+  function showSuccessBanner() {
     resetBanners();
-    dom.uploadSuccessText.textContent = message || '✅ Course sheet uploaded successfully.';
+    I18N.setText(dom.uploadSuccessText, 'upload.success');
     dom.uploadSuccess.hidden = false;
   }
 
-  function showErrorBanner(message) {
+  /** Accepts an Error (keyed errors stay translatable, raw ones are shown
+   *  verbatim) or a dictionary key such as ERRORS.UNSUPPORTED_FILE. The
+   *  "❌ " prefix comes from data-i18n-prefix on #upload-error-text. */
+  function showErrorBanner(errOrKey) {
     resetBanners();
-    dom.uploadErrorText.textContent = `❌ ${message}`;
+    I18N.setErrorText(dom.uploadErrorText, errOrKey, 'err.invalidExcel');
     dom.uploadError.hidden = false;
   }
 
@@ -488,16 +512,23 @@
     });
   }
 
+  /** `status` is a dictionary key (status.*), not display text. */
   function updateStatsDisplay({ fileName, headers, students, lastUpdate, status }) {
-    if (fileName !== undefined) dom.statFile.textContent = fileName || 'No file uploaded yet';
+    if (fileName !== undefined) {
+      if (fileName) I18N.setRaw(dom.statFile, fileName);        // real file name — never re-translated
+      else I18N.setText(dom.statFile, 'stat.noFile');
+    }
     if (students !== undefined) dom.statStudents.textContent = students;
     if (headers) {
       dom.statWeeks.textContent = countWeeks(headers);
       dom.statTasks.textContent = countPrefixed(headers, 't');
       dom.statNotes.textContent = countNotes(headers);
     }
-    if (lastUpdate !== undefined) dom.statUpdated.textContent = formatDateTime(lastUpdate);
-    if (status !== undefined) dom.statStatus.textContent = status;
+    if (lastUpdate !== undefined) {
+      lastUpdateIso = lastUpdate;
+      dom.statUpdated.textContent = formatDateTime(lastUpdate);
+    }
+    if (status !== undefined) I18N.setText(dom.statStatus, status);
   }
 
   /* =====================================================================
@@ -538,7 +569,7 @@
 
       markStepsUpTo('process');
       await wait(150);
-      updateStatsDisplay({ fileName: file.name, headers, students: rows.length, status: 'Processing…' });
+      updateStatsDisplay({ fileName: file.name, headers, students: rows.length, status: 'status.processing' });
 
       markStepsUpTo('sync');
       const result = await pushToFirebase(headers, rows);
@@ -551,13 +582,13 @@
         headers,
         students: result.studentsWritten,
         lastUpdate: result.lastUpdate,
-        status: 'Active',
+        status: 'status.active',
       });
 
-      showSuccessBanner('✅ Course sheet uploaded successfully.');
+      showSuccessBanner();
     } catch (err) {
-      updateStatsDisplay({ status: 'Failed' });
-      showErrorBanner((err && err.message) || ERRORS.INVALID_EXCEL);
+      updateStatsDisplay({ status: 'status.failed' });
+      showErrorBanner(err);
     } finally {
       dom.fileInput.value = '';
       dom.fileInput.disabled = false;
@@ -607,11 +638,11 @@
         headers,
         students: payload.rows ? payload.rows.length : 0,
         lastUpdate: payload.lastUpdate,
-        status: headers.length ? 'Active' : 'No data yet',
+        status: headers.length ? 'status.active' : 'status.noData',
       });
     } catch (err) {
       console.warn('CourseTrack Admin — could not load current stats:', err.message);
-      updateStatsDisplay({ status: 'Not connected' });
+      updateStatsDisplay({ status: 'status.notConnected' });
     }
   }
 
@@ -622,6 +653,10 @@
     try {
       applyBranding();
       initTheme();
+      I18N.onChange(() => {
+        applyBrandText();
+        dom.statUpdated.textContent = formatDateTime(lastUpdateIso);   // re-localise the date
+      });
       initUpload();
       dom.themeToggle.addEventListener('click', toggleTheme);
       loadInitialStats();

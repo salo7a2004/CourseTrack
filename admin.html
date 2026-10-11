@@ -2,13 +2,15 @@
 <html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8" />
+  <!-- Apply the saved language/direction before first paint (no LTR flash on reload). i18n.js takes over once loaded. -->
+  <script>try{if(localStorage.getItem('coursetrack_lang')==='ar'){var r=document.documentElement;r.lang='ar';r.dir='rtl';}}catch(e){}</script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CourseTrack | Admin Dashboard</title>
+  <title data-i18n="page.adminTitle">CourseTrack | Admin Dashboard</title>
   <meta name="robots" content="noindex, nofollow" />
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&family=Inter:wght@400;500;600;700;800&family=Cairo:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
   <!-- SheetJS: only the Admin page ever reads a raw .xlsx file -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -23,7 +25,7 @@
       <span class="loader-ring"></span>
       <span class="loader-ring loader-ring--delay"></span>
     </div>
-    <p class="loader-text">Preparing Admin Dashboard…</p>
+    <p class="loader-text" data-i18n="loading.admin">Preparing Admin Dashboard…</p>
   </div>
 
   <div class="app-shell">
@@ -37,32 +39,37 @@
         </div>
         <div class="brand-text">
           <h1 id="header-course-name">CourseTrack</h1>
-          <span class="admin-badge">Admin Only</span>
+          <span class="admin-badge" data-i18n="admin.badge">Admin Only</span>
         </div>
       </div>
 
       <div class="header-orgs">
         <div class="org-chip">
-          <span class="org-chip__caption">Officially Managed by</span>
+          <span class="org-chip__caption" data-i18n="org.managedBy">Officially Managed by</span>
           <div class="org-chip__body">
-            <span class="org-logo-badge"><img id="org-logo-primary" alt="Primary organization logo" hidden /><span id="org-placeholder-primary" class="org-logo-badge__placeholder">9D</span></span>
+            <span class="org-logo-badge"><img id="org-logo-primary" alt="Primary organization logo" data-i18n-alt="org.primaryLogoAlt" hidden /><span id="org-placeholder-primary" class="org-logo-badge__placeholder">9D</span></span>
             <span class="org-chip__name" id="org-name-primary">9D</span>
           </div>
         </div>
         <div class="org-chip">
-          <span class="org-chip__caption">In Collaboration With</span>
+          <span class="org-chip__caption" data-i18n="org.collab">In Collaboration With</span>
           <div class="org-chip__body">
-            <span class="org-logo-badge"><img id="org-logo-partner" alt="Partner organization logo" hidden /><span id="org-placeholder-partner" class="org-logo-badge__placeholder">EX</span></span>
+            <span class="org-logo-badge"><img id="org-logo-partner" alt="Partner organization logo" data-i18n-alt="org.partnerLogoAlt" hidden /><span id="org-placeholder-partner" class="org-logo-badge__placeholder">EX</span></span>
             <span class="org-chip__name" id="org-name-partner">ENGX</span>
           </div>
         </div>
 
         <a href="index.html" class="header-link">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
-          Student Portal
+          <span data-i18n="admin.studentPortal">Student Portal</span>
         </a>
 
-        <button id="theme-toggle" class="theme-toggle" aria-label="Toggle dark mode" title="Toggle theme">
+        <button id="lang-toggle" class="lang-toggle" type="button" aria-pressed="false" data-i18n-aria="lang.switchAria" data-i18n-title="lang.switchAria">
+          <span class="lang-toggle__opt is-active" data-lang-opt="en">EN</span>
+          <span class="lang-toggle__opt" data-lang-opt="ar" lang="ar">عربي</span>
+        </button>
+
+        <button id="theme-toggle" class="theme-toggle" aria-label="Toggle dark mode" title="Toggle theme" data-i18n-aria="theme.toggle" data-i18n-title="theme.toggleTitle">
           <svg class="icon-sun" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.4M12 19.6V22M4.9 4.9l1.7 1.7M17.4 17.4l1.7 1.7M2 12h2.4M19.6 12H22M4.9 19.1l1.7-1.7M17.4 6.6l1.7-1.7"/></svg>
           <svg class="icon-moon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.5 14.5a8.5 8.5 0 1 1-9-11 7 7 0 0 0 9 11z"/></svg>
         </button>
@@ -75,44 +82,44 @@
       <div class="glass-card info-card">
         <h3 class="section-title info-card__title">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-          Course Information
+          <span data-i18n="info.title">Course Information</span>
         </h3>
         <div class="info-grid">
-          <div class="info-field"><span class="info-field__label">Course Name</span><span class="info-field__value" id="info-course-name">—</span></div>
-          <div class="info-field"><span class="info-field__label">Instructor Name</span><span class="info-field__value" id="info-instructor-name">—</span></div>
-          <div class="info-field"><span class="info-field__label">Current Version</span><span class="info-field__value" id="info-version">—</span></div>
+          <div class="info-field"><span class="info-field__label" data-i18n="info.courseName">Course Name</span><span class="info-field__value" id="info-course-name">—</span></div>
+          <div class="info-field"><span class="info-field__label" data-i18n="info.instructor">Instructor Name</span><span class="info-field__value" id="info-instructor-name">—</span></div>
+          <div class="info-field"><span class="info-field__label" data-i18n="info.version">Current Version</span><span class="info-field__value" id="info-version">—</span></div>
         </div>
-        <p class="no-data-hint">Course Name and Instructor Name are set in config.js and cannot be edited here or by students.</p>
+        <p class="no-data-hint" data-i18n="info.hint">Course Name and Instructor Name are set in config.js and cannot be edited here or by students.</p>
       </div>
 
       <!-- ---------- UPLOAD CARD ---------- -->
       <div class="glass-card admin-card">
-        <h2 class="search-card__title">Upload Course Sheet</h2>
-        <p class="search-card__subtitle">Upload the <strong>.xlsx</strong> file. It will be parsed here, then saved to the Firebase database — every student sees it immediately.</p>
+        <h2 class="search-card__title" data-i18n="upload.title">Upload Course Sheet</h2>
+        <p class="search-card__subtitle" data-i18n-html="upload.subtitle">Upload the <strong><bdi dir="ltr">.xlsx</bdi></strong> file. It will be parsed here, then saved to the Firebase database — every student sees it immediately.</p>
 
         <label for="file-input" id="dropzone" class="dropzone">
           <svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3v12m0-12l-5 5m5-5l5 5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
-          <span class="dropzone-title">Drag &amp; drop your .xlsx file here</span>
-          <span class="dropzone-sub">or click to browse</span>
+          <span class="dropzone-title" data-i18n-html="dropzone.title">Drag &amp; drop your <bdi dir="ltr">.xlsx</bdi> file here</span>
+          <span class="dropzone-sub" data-i18n="dropzone.sub">or click to browse</span>
           <input type="file" id="file-input" accept=".xlsx" hidden />
         </label>
 
         <div class="upload-steps" id="upload-steps" hidden>
-          <div class="upload-step" data-step="upload"><span class="upload-step__dot"></span><span>Uploading…</span></div>
-          <div class="upload-step" data-step="read"><span class="upload-step__dot"></span><span>Reading workbook…</span></div>
-          <div class="upload-step" data-step="process"><span class="upload-step__dot"></span><span>Processing students…</span></div>
-          <div class="upload-step" data-step="sync"><span class="upload-step__dot"></span><span>Syncing to Firebase…</span></div>
-          <div class="upload-step" data-step="done"><span class="upload-step__dot"></span><span>Finished.</span></div>
+          <div class="upload-step" data-step="upload"><span class="upload-step__dot"></span><span data-i18n="step.upload">Uploading…</span></div>
+          <div class="upload-step" data-step="read"><span class="upload-step__dot"></span><span data-i18n="step.read">Reading workbook…</span></div>
+          <div class="upload-step" data-step="process"><span class="upload-step__dot"></span><span data-i18n="step.process">Processing students…</span></div>
+          <div class="upload-step" data-step="sync"><span class="upload-step__dot"></span><span data-i18n="step.sync">Syncing to Firebase…</span></div>
+          <div class="upload-step" data-step="done"><span class="upload-step__dot"></span><span data-i18n="step.done">Finished.</span></div>
         </div>
 
         <div class="upload-banner upload-banner--success" id="upload-success" hidden>
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M5 13l4 4L19 7"/></svg>
-          <span id="upload-success-text">✅ Course sheet uploaded successfully.</span>
+          <span id="upload-success-text" data-i18n="upload.success">✅ Course sheet uploaded successfully.</span>
         </div>
 
         <div class="upload-banner upload-banner--error" id="upload-error" hidden>
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="10"/><path d="M12 8v5M12 16h.01"/></svg>
-          <span id="upload-error-text">❌ Invalid Excel file.</span>
+          <span id="upload-error-text" data-i18n="err.invalidExcel" data-i18n-prefix="❌ ">❌ Invalid Excel file.</span>
         </div>
       </div>
 
@@ -120,16 +127,16 @@
       <div class="glass-card info-card">
         <h3 class="section-title info-card__title">
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19h16M7 19V9m5 10V4m5 15v-7"/></svg>
-          Statistics
+          <span data-i18n="stats.title">Statistics</span>
         </h3>
         <div class="info-grid" id="stats-grid">
-          <div class="info-field"><span class="info-field__label">Current File</span><span class="info-field__value" id="stat-file" dir="auto">No file uploaded yet</span></div>
-          <div class="info-field"><span class="info-field__label">Number of Students</span><span class="info-field__value" id="stat-students">0</span></div>
-          <div class="info-field"><span class="info-field__label">Weeks Detected</span><span class="info-field__value" id="stat-weeks">0</span></div>
-          <div class="info-field"><span class="info-field__label">Tasks Detected</span><span class="info-field__value" id="stat-tasks">0</span></div>
-          <div class="info-field"><span class="info-field__label">Notes Columns</span><span class="info-field__value" id="stat-notes">0</span></div>
-          <div class="info-field"><span class="info-field__label">Last Update</span><span class="info-field__value" id="stat-updated">—</span></div>
-          <div class="info-field"><span class="info-field__label">Upload Status</span><span class="info-field__value" id="stat-status">No data yet</span></div>
+          <div class="info-field"><span class="info-field__label" data-i18n="stat.file">Current File</span><span class="info-field__value" id="stat-file" dir="auto" data-i18n="stat.noFile">No file uploaded yet</span></div>
+          <div class="info-field"><span class="info-field__label" data-i18n="stat.students">Number of Students</span><span class="info-field__value" id="stat-students">0</span></div>
+          <div class="info-field"><span class="info-field__label" data-i18n="stat.weeks">Weeks Detected</span><span class="info-field__value" id="stat-weeks">0</span></div>
+          <div class="info-field"><span class="info-field__label" data-i18n="stat.tasks">Tasks Detected</span><span class="info-field__value" id="stat-tasks">0</span></div>
+          <div class="info-field"><span class="info-field__label" data-i18n="stat.notes">Notes Columns</span><span class="info-field__value" id="stat-notes">0</span></div>
+          <div class="info-field"><span class="info-field__label" data-i18n="stat.updated">Last Update</span><span class="info-field__value" id="stat-updated">—</span></div>
+          <div class="info-field"><span class="info-field__label" data-i18n="stat.status">Upload Status</span><span class="info-field__value" id="stat-status" data-i18n="status.noData">No data yet</span></div>
         </div>
       </div>
 
@@ -144,6 +151,7 @@
   </div>
 
   <script src="config.js"></script>
+  <script src="i18n.js"></script>
   <script src="admin.js"></script>
 </body>
 </html>

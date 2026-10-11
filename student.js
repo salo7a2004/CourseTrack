@@ -14,6 +14,7 @@
   'use strict';
 
   const CONFIG = window.APP_CONFIG || {};
+  const I18N = window.I18N; // i18n.js MUST be loaded before this file (see index.html)
 
   /* -------------------------------------------------------------------
      0. CONSTANTS
@@ -35,9 +36,8 @@
     { key: 'name', pattern: /name|اسم/i },
   ];
 
-  const SESSION_LABELS = { meeting: 'Meeting Grade', task: 'Task Grade', notes: 'Instructor Notes' };
-  const NOT_PUBLISHED_LABEL = 'Not Published Yet';
-  const NO_NOTES_LABEL = 'No notes for this session';
+  // Session labels and fallback texts ("Not Published Yet", ...) now live
+  // in i18n.js's dictionary (keys: session.*), so they follow the UI language.
 
   const ICONS = {
     meeting: '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 2v4M16 2v4M3 9h18M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></svg>',
@@ -126,10 +126,6 @@
   function applyBranding() {
     applyBrandColors();
 
-    dom.headerCourseName.textContent = CONFIG.courseName || 'CourseTrack';
-    dom.headerCourseSubtitle.textContent = CONFIG.courseSubtitle || 'Student Portal';
-    dom.courseLogoPlaceholder.textContent = (CONFIG.courseName || 'C').trim().charAt(0).toUpperCase();
-
     const logos = CONFIG.logos || {};
     applyLogo(dom.courseLogoImg, dom.courseLogoPlaceholder, logos.course);
     applyLogo(dom.orgLogoPrimary, dom.orgPlaceholderPrimary, logos.primaryOrg);
@@ -145,13 +141,34 @@
       dom.orgPlaceholderPartner.textContent = orgs.partner.name;
     }
 
+    applyBrandText();
+  }
+
+  /** Language-dependent branding text. Runs at startup and again on every
+   *  language switch. Logos/colors stay in applyBranding() so they don't
+   *  reload (and flicker) when the language changes. */
+  function applyBrandText() {
+    const courseName = I18N.cfgOr('courseName', null) || 'CourseTrack';
+    dom.headerCourseName.textContent = courseName;
+    dom.courseLogoPlaceholder.textContent = courseName.trim().charAt(0).toUpperCase();
+    dom.headerCourseSubtitle.textContent = I18N.cfgOr('courseSubtitle', 'header.subtitle');
+
+    const orgs = CONFIG.organizations || {};
     const footer = CONFIG.footerText || {};
-    if (footer.poweredBy) dom.footerPowered.textContent = footer.poweredBy;
-    if (footer.collaboration) dom.footerCollab.textContent = footer.collaboration;
-    if (footer.developedBy) {
-      const name = footer.developedBy.replace(/^Developed by\s*/i, '');
-      dom.footerDeveloped.innerHTML = `Developed by <strong>${escapeHtml(name)}</strong>`;
-    }
+    const isEn = I18N.getLang() === 'en';
+    const primaryName = (orgs.primary && orgs.primary.name) || '';
+    const partnerName = (orgs.partner && orgs.partner.name) || '';
+
+    // English keeps exactly what config.js says; Arabic uses the dictionary.
+    dom.footerPowered.textContent = isEn && footer.poweredBy
+      ? footer.poweredBy
+      : I18N.t('footer.poweredBy', { org: primaryName });
+    dom.footerCollab.textContent = isEn && footer.collaboration
+      ? footer.collaboration
+      : I18N.t('footer.collab', { org: partnerName });
+
+    const devName = (footer.developedBy || 'Salah Hossam').replace(/^Developed by\s*/i, '');
+    dom.footerDeveloped.innerHTML = `${escapeHtml(I18N.t('footer.developedBy'))} <strong><bdi>${escapeHtml(devName)}</bdi></strong>`;
   }
 
   function escapeHtml(str) {
@@ -250,7 +267,7 @@
   function getStudentsUrl() {
     const databaseURL = CONFIG.firebase && CONFIG.firebase.databaseURL;
     if (!databaseURL || /PASTE_|YOUR_/i.test(databaseURL)) {
-      throw new Error('The course data source is not configured yet. Ask your instructor to finish the Firebase setup.');
+      throw I18N.error('err.notConfigured');
     }
     return `${databaseURL.replace(/\/+$/, '')}/students.json`;
   }
@@ -276,11 +293,7 @@
       response = await fetch(url, { method: 'GET', cache: 'no-store', signal: controller.signal });
     } catch (err) {
       window.clearTimeout(timeoutId);
-      throw new Error(
-        err && err.name === 'AbortError'
-          ? 'The course data source took too long to respond. Please try again.'
-          : 'Could not reach the course data source. Check your internet connection and try again.'
-      );
+      throw I18N.error(err && err.name === 'AbortError' ? 'err.timeout' : 'err.network');
     }
 
     // The abort timer stays armed through the body read below too — a
@@ -288,19 +301,15 @@
     let data;
     try {
       if (!response.ok) {
-        throw new Error(
-          response.status === 401 || response.status === 403
-            ? 'Access to the course data source was denied. Ask your instructor to check the database configuration.'
-            : 'The course data source returned an error. Please try again shortly.'
-        );
+        throw I18N.error(response.status === 401 || response.status === 403 ? 'err.denied' : 'err.serverError');
       }
       data = await response.json();
     } catch (err) {
       if (err && err.name === 'AbortError') {
-        throw new Error('The course data source took too long to respond. Please try again.');
+        throw I18N.error('err.timeout');
       }
       if (err instanceof SyntaxError) {
-        throw new Error('The course data source returned an unreadable response.');
+        throw I18N.error('err.unreadable');
       }
       throw err;
     } finally {
@@ -316,7 +325,7 @@
     // written under /students by hand.
     const rows = data ? Object.values(data).filter((r) => r && typeof r === 'object') : [];
     if (!rows.length) {
-      throw new Error('No course data has been uploaded yet. Please check back later.');
+      throw I18N.error('err.noData');
     }
 
     // Union of every key across every record — not just the first
@@ -380,6 +389,10 @@
   }
 
   function setAutoText(el, text) {
+    // Real data (names, codes, grades, notes...) must never be re-translated
+    // or overwritten by a language switch, so any translation key is detached.
+    el.removeAttribute('data-i18n');
+    el.removeAttribute('data-i18n-vars');
     el.textContent = text;
     el.setAttribute('dir', 'auto');
   }
@@ -390,7 +403,12 @@
     dom.results.hidden = !results;
   }
 
-  function buildFieldCard(label, displayed, statusClass, iconSvg) {
+  /**
+   * labelKey    — dictionary key for the field label (session.*)
+   * value       — the RAW cell value from the database
+   * fallbackKey — dictionary key shown when the cell is empty
+   */
+  function buildFieldCard(labelKey, value, fallbackKey, statusClass, iconSvg) {
     const field = document.createElement('div');
     field.className = 'tl-field';
 
@@ -403,11 +421,16 @@
 
     const labelEl = document.createElement('span');
     labelEl.className = 'tl-field__label';
-    labelEl.textContent = label;
+    I18N.setText(labelEl, labelKey);
 
     const valueEl = document.createElement('span');
     valueEl.className = `tl-field__value status-${statusClass.status}`;
-    setAutoText(valueEl, displayed);
+    if (isEmptyCell(value)) {
+      I18N.setText(valueEl, fallbackKey);           // "Not Published Yet" etc. — translatable
+      valueEl.setAttribute('dir', 'auto');
+    } else {
+      setAutoText(valueEl, displayValue(value));    // real data — verbatim, never keyed
+    }
 
     text.appendChild(labelEl);
     text.appendChild(valueEl);
@@ -429,7 +452,7 @@
     header.className = 'timeline-item__header';
     const title = document.createElement('span');
     title.className = 'timeline-item__title';
-    title.textContent = `Week ${week.num}`;
+    I18N.setText(title, 'week.title', { n: week.num });
     header.appendChild(title);
     item.appendChild(header);
 
@@ -438,21 +461,18 @@
 
     if (week.meetingKey) {
       const value = row[week.meetingKey];
-      const displayed = displayValue(value, NOT_PUBLISHED_LABEL);
       const status = isEmptyCell(value) ? 'pending' : classifyValue(value);
-      body.appendChild(buildFieldCard(SESSION_LABELS.meeting, displayed, { status, iconKind: 'meeting' }, ICONS.meeting));
+      body.appendChild(buildFieldCard('session.meeting', value, 'session.notPublished', { status, iconKind: 'meeting' }, ICONS.meeting));
     }
     if (week.taskKey) {
       const value = row[week.taskKey];
-      const displayed = displayValue(value, NOT_PUBLISHED_LABEL);
       const status = isEmptyCell(value) ? 'pending' : classifyValue(value);
-      body.appendChild(buildFieldCard(SESSION_LABELS.task, displayed, { status, iconKind: 'task' }, ICONS.task));
+      body.appendChild(buildFieldCard('session.task', value, 'session.notPublished', { status, iconKind: 'task' }, ICONS.task));
     }
     if (week.notesKey) {
       const value = row[week.notesKey];
-      const displayed = displayValue(value, NO_NOTES_LABEL);
       const status = isEmptyCell(value) ? 'pending' : 'neutral';
-      body.appendChild(buildFieldCard(SESSION_LABELS.notes, displayed, { status, iconKind: 'notes' }, ICONS.notes));
+      body.appendChild(buildFieldCard('session.notes', value, 'session.noNotes', { status, iconKind: 'notes' }, ICONS.notes));
     }
 
     item.appendChild(body);
@@ -523,7 +543,13 @@
      ===================================================================== */
 
   function renderProfile(columns, student) {
-    setAutoText(dom.studentName, columns.name ? displayValue(student.raw[columns.name], 'Student') : 'Student');
+    const studentName = columns.name ? displayValue(student.raw[columns.name], '') : '';
+    if (studentName) {
+      setAutoText(dom.studentName, studentName);
+    } else {
+      I18N.setText(dom.studentName, 'profile.fallbackName'); // "Student" — translatable fallback
+      dom.studentName.setAttribute('dir', 'auto');
+    }
     setAutoText(dom.studentCodeDisplay, student.code);
 
     if (columns.email) {
@@ -569,8 +595,8 @@
 
       if (!student) {
         console.warn('CourseTrack — no student matched for code:', code);
-        dom.errorTitle.textContent = '❌ Student Code Not Found';
-        dom.errorMessage.textContent = "We couldn't match that code to any record. Double-check it and try again.";
+        I18N.setText(dom.errorTitle, 'err.notFound.title');
+        I18N.setText(dom.errorMessage, 'err.notFound.msg');
         setViewState({ error: true });
         return;
       }
@@ -579,8 +605,8 @@
       renderStudent(columns, student);
     } catch (err) {
       console.error('CourseTrack — search error:', err);
-      dom.errorTitle.textContent = '❌ Something Went Wrong';
-      dom.errorMessage.textContent = (err && err.message) || 'An unexpected error occurred while searching. Please try again.';
+      I18N.setText(dom.errorTitle, 'err.generic.title');
+      I18N.setErrorText(dom.errorMessage, err, 'err.generic.msg');
       setViewState({ error: true });
     } finally {
       // Loading state is hidden immediately and unconditionally, no
@@ -681,20 +707,19 @@
 
       const frameDoc = printFrame.contentWindow.document;
       frameDoc.open();
-      // lang/dir are deliberately "en"/ltr — matching index.html's own
-      // root — regardless of any Arabic content inside the report:
+      // lang/dir follow the portal's current language, so an Arabic report
+      // prints right-to-left. The cloned results are already translated;
       // individual name/notes/email fields keep their own dir="auto"
-      // (cloned along with every other attribute), which is what
-      // correctly right-aligns just that text. No data-theme attribute
-      // is set either, even if the student currently has Dark Mode on:
-      // that guarantees the printed page always uses style.css's
-      // default (light) colors, never dark-mode text colors that would
-      // be unreadable against white paper.
+      // (cloned along with every other attribute). No data-theme attribute
+      // is set, even if the student currently has Dark Mode on: that
+      // guarantees the printed page always uses style.css's default
+      // (light) colors, never dark-mode text colors that would be
+      // unreadable against white paper.
       frameDoc.write(`<!DOCTYPE html>
-<html lang="en" dir="ltr">
+<html lang="${I18N.getLang()}" dir="${I18N.getDir()}">
 <head>
 <meta charset="UTF-8">
-<title>CourseTrack Report - ${studentCode}</title>
+<title>${escapeHtml(I18N.t('print.docTitle', { code: studentCode }))}</title>
 <link rel="stylesheet" href="${styleHref}">
 </head>
 <body></body>
@@ -705,16 +730,16 @@
       // feature needs (everything else reuses the real #results DOM).
       // Built from CONFIG rather than hardcoded, so it stays correct if
       // the course/organization branding ever changes.
-      const courseName = CONFIG.courseName || 'Student Academic Report';
+      const courseName = I18N.cfgOr('courseName', null) || 'Student Academic Report';
       const primaryOrgName = (CONFIG.organizations && CONFIG.organizations.primary && CONFIG.organizations.primary.name) || '';
-      const reportDate = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+      const reportDate = new Date().toLocaleDateString(I18N.locale(), { year: 'numeric', month: 'long', day: 'numeric' });
 
       const header = frameDoc.createElement('div');
       header.className = 'print-header';
       header.innerHTML = `
         <div>
-          <div class="print-header__title">CourseTrack — Student Academic Report</div>
-          <div class="print-header__subtitle">${escapeHtml(courseName)} · Generated automatically via Student Portal</div>
+          <div class="print-header__title">${escapeHtml(I18N.t('print.title'))}</div>
+          <div class="print-header__subtitle">${escapeHtml(I18N.t('print.subtitle', { course: courseName }))}</div>
         </div>
         <div class="print-header__date">${reportDate}</div>
       `;
@@ -722,8 +747,8 @@
       const footer = frameDoc.createElement('div');
       footer.className = 'print-footer';
       footer.textContent = primaryOrgName
-        ? `This is an official computer-generated academic document, issued by ${primaryOrgName}.`
-        : 'This is an official computer-generated academic document.';
+        ? I18N.t('print.footerOrg', { org: primaryOrgName })
+        : I18N.t('print.footer');
 
       frameDoc.body.appendChild(header);
       frameDoc.body.appendChild(resultsClone);
@@ -779,6 +804,7 @@
     try {
       applyBranding();
       initTheme();
+      I18N.onChange(applyBrandText);   // re-translate branding text on language switch
       initSearch();
       initRememberCode();   // NEW: Remember My Code
       initDownloadPdf();    // NEW: Download Report Card (PDF)
