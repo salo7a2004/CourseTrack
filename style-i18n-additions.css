@@ -1,0 +1,81 @@
+/* =======================================================================
+   21. NEW FEATURE: Language toggle (EN / عربي) + RTL support
+   -----------------------------------------------------------------------
+   APPEND THIS BLOCK TO THE VERY END of style.css (it must come after the
+   existing rules so it wins on equal specificity, and after the @media
+   print block so the print overrides at the bottom take effect).
+
+   The PDF report iframe links this same style.css, so these rules apply
+   to the printed Arabic report automatically.
+
+   Why overrides instead of rewriting every left/right to logical
+   properties: the existing LTR design stays byte-for-byte untouched; each
+   physical left/right declaration found in style.css is mirrored once
+   below, scoped to [dir="rtl"].
+   ======================================================================= */
+
+/* ---- Language switch pill: sits next to .theme-toggle ---- */
+.lang-toggle {
+  display: flex; align-items: center; gap: 2px;
+  height: 40px; padding: 3px; border: 0; border-radius: 999px;
+  background: rgba(47, 84, 235, 0.08);
+  cursor: pointer; flex-shrink: 0;
+  transition: background var(--transition-fast);
+}
+.lang-toggle:hover { background: rgba(47, 84, 235, 0.14); }
+.lang-toggle:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.lang-toggle__opt {
+  display: flex; align-items: center; height: 100%; padding: 0 11px;
+  border-radius: 999px; line-height: 1;
+  font-size: 0.76rem; font-weight: 700; color: var(--text-muted);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.lang-toggle__opt.is-active { background: var(--color-primary); color: #fff; }
+
+/* ---- Arabic typography ---- */
+/* Poppins/Inter have no Arabic glyphs. Cairo is loaded from the same
+   Google Fonts <link>; Segoe UI/Tahoma are the offline fallbacks.       */
+:root[lang="ar"] {
+  --font-display: 'Cairo', 'Segoe UI', Tahoma, sans-serif;
+  --font-body: 'Cairo', 'Segoe UI', Tahoma, sans-serif;
+}
+/* letter-spacing pulls Arabic letters apart and breaks their joining —
+   every uppercase "eyebrow" label in style.css uses it.                  */
+:root[lang="ar"] * { letter-spacing: normal; }
+
+/* ---- Mirrored positions (every physical left/right in style.css) ---- */
+
+/* Search box: magnifier moves to the right, text padding follows */
+[dir="rtl"] .search-input-icon { left: auto; right: 15px; }
+[dir="rtl"] #student-code-input { padding: 13px 42px 13px 16px; }
+/* An empty input with dir="auto" resolves to LTR, which would scramble
+   the Arabic placeholder's punctuation; once the student types a Latin
+   code, :placeholder-shown stops matching and dir="auto" takes over.     */
+[dir="rtl"] #student-code-input:placeholder-shown { direction: rtl; }
+
+/* Weekly timeline rail + dots move to the right-hand side */
+[dir="rtl"] .timeline { padding-left: 0; padding-right: 30px; }
+[dir="rtl"] .timeline::before { left: auto; right: 9px; }
+[dir="rtl"] .timeline-item::before { left: auto; right: -30px; }
+
+/* Admin upload-step list */
+[dir="rtl"] .upload-steps { text-align: right; }
+
+/* Directional arrows (header "Student Portal" chevron, Search button) */
+[dir="rtl"] .header-link > svg,
+[dir="rtl"] #search-btn > svg { transform: scaleX(-1); }
+
+@media (max-width: 768px) {
+  [dir="rtl"] .timeline { padding-left: 0; padding-right: 24px; }
+}
+
+/* ---- Printed report (PDF iframe is dir="rtl" when Arabic is active) ---- */
+@media print {
+  [dir="rtl"] .timeline { padding-right: 0 !important; }
+  [dir="rtl"] .section-title {
+    padding-left: 0;
+    padding-right: 10px;
+    border-left: 0;
+    border-right: 4px solid var(--color-primary);
+  }
+}
