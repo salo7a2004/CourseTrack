@@ -661,21 +661,134 @@
 
   /* =====================================================================
      NEW FEATURE 2: "Download Report Card (PDF)"
-     Prints through a hidden, fully isolated iframe rather than the live
-     page: only #results' content exists in that document at all, so
-     there is nothing else that could ever leak into the printout and
-     nothing on the live page is ever touched.
 
-     Deliberately reuses the real style.css (via a normal <link>) rather
-     than hand-duplicating its card/badge/icon/status styling in a
-     second, parallel copy — that second copy would start drifting from
-     the real design the moment either one changes, and would be missing
-     plenty of classes (.profile-badge, .avatar, .tl-field__icon, etc.)
-     on day one. The existing @media print rules in style.css (hide
-     non-report chrome, flatten glass cards to a plain border, avoid
-     breaking a card across a page) apply here exactly as written —
-     nothing print-specific needed to be duplicated either.
+     HOW IT PRINTS — and why it is built this way
+     --------------------------------------------
+     The report is assembled as a hidden #print-root element inside the
+     LIVE page, and the page's own window.print() is called — synchronously,
+     directly inside the click/tap handler. Nothing is awaited, no timer or
+     load-event sits between the tap and print().
+
+     The previous version printed from a hidden 0x0 iframe, once its
+     stylesheet's `load` event fired. That fails on phones for two reasons:
+       1. Mobile browsers (iOS Safari, Android Chrome) only open the print /
+          "Save as PDF" sheet when print() runs inside the user's tap. The
+          `load` event is asynchronous, so by then the tap's permission has
+          lapsed and print() is silently ignored — the button "does nothing".
+       2. iOS Safari is unreliable at printing a hidden, zero-size iframe.
+     Printing the live page avoids both: the stylesheet and web fonts
+     (Cairo for Arabic) are already loaded, so there is nothing to wait for.
+
+     LANGUAGE: #print-root lives in the same document as the portal, so it
+     inherits <html lang dir> and the active font automatically — Arabic
+     prints right-to-left, in Cairo, with a translated banner and footer.
+
+     ISOLATION: print-only CSS (style.css §22) hides every other element
+     while body.printing-report is set, and #print-root is display:none on
+     screen, so nothing on the live page is touched or flashes. The
+     "printing-report" class is removed again after printing.
      ===================================================================== */
+
+  const PRINT_ROOT_ID = 'print-root';
+  let teardownStagedReport = null; // removes the report currently staged for printing, if any
+
+  /** Builds the printable report: banner + a clone of the current results + footer. */
+  function buildReportRoot() {
+    const root = document.createElement('div');
+    root.id = PRINT_ROOT_ID;
+    root.setAttribute('aria-hidden', 'true');
+
+    // Clone just the results, minus the toolbar (the Download button must
+    // never appear in its own printout). Ids are stripped so the clone
+    // can't create duplicate ids on the live page.
+    const resultsClone = dom.results.cloneNode(true);
+    const toolbarClone = resultsClone.querySelector('.results-toolbar');
+    if (toolbarClone) toolbarClone.remove();
+    resultsClone.removeAttribute('id');
+    resultsClone.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
+    resultsClone.hidden = false;
+
+    // Report banner + footer — built from CONFIG and the dictionary rather
+    // than hardcoded, so they follow both the branding and the language.
+    const courseName = I18N.cfgOr('courseName', null) || 'Student Academic Report';
+    const primaryOrgName = (CONFIG.organizations && CONFIG.organizations.primary && CONFIG.organizations.primary.name) || '';
+    const reportDate = new Date().toLocaleDateString(I18N.locale(), { year: 'numeric', month: 'long', day: 'numeric' });
+
+    const header = document.createElement('div');
+    header.className = 'print-header';
+    header.innerHTML = `
+      <div>
+        <div class="print-header__title">${escapeHtml(I18N.t('print.title'))}</div>
+        <div class="print-header__subtitle">${escapeHtml(I18N.t('print.subtitle', { course: courseName }))}</div>
+      </div>
+      <div class="print-header__date">${escapeHtml(reportDate)}</div>
+    `;
+
+    const footer = document.createElement('div');
+    footer.className = 'print-footer';
+    footer.textContent = primaryOrgName
+      ? I18N.t('print.footerOrg', { org: primaryOrgName })
+      : I18N.t('print.footer');
+
+    root.appendChild(header);
+    root.appendChild(resultsClone);
+    root.appendChild(footer);
+
+    // The report always prints on the light palette (style.css §22), but a
+    // customised brand color from config.js must still carry through —
+    // mirror the same runtime override applyBrandColors() applies to <html>.
+    if (CONFIG.colors) {
+      if (CONFIG.colors.primary) root.style.setProperty('--color-primary', CONFIG.colors.primary);
+      if (CONFIG.colors.secondary) root.style.setProperty('--color-accent', CONFIG.colors.secondary);
+    }
+    return root;
+  }
+
+  /** Puts the report into the page, switches the page to "print only the
+   *  report" mode, and arranges for everything to be undone afterwards. */
+  function stageReportForPrint(root, documentTitle) {
+    if (teardownStagedReport) teardownStagedReport(); // never keep two reports staged
+
+    document.body.appendChild(root);
+    const previousTitle = document.title;
+    document.title = documentTitle;                      // browsers use it as the saved-PDF file name
+    document.body.classList.add('printing-report');
+
+    const stagedAt = Date.now();
+    const printQuery = window.matchMedia ? window.matchMedia('print') : null;
+    let finished = false;
+    let fallbackTimer = null;
+
+    // Mobile browsers return from print() immediately (the print sheet is
+    // asynchronous) and don't all fire the same "finished" signal, so the
+    // report is torn down on whichever arrives first.
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      window.clearTimeout(fallbackTimer);
+      window.removeEventListener('afterprint', finish);
+      document.removeEventListener('pointerdown', onNextTap, true);
+      if (printQuery) {
+        if (printQuery.removeEventListener) printQuery.removeEventListener('change', onPrintQueryChange);
+        else if (printQuery.removeListener) printQuery.removeListener(onPrintQueryChange);
+      }
+      document.body.classList.remove('printing-report');
+      document.title = previousTitle;
+      root.remove();
+      if (teardownStagedReport === finish) teardownStagedReport = null;
+    };
+    const onNextTap = () => { if (Date.now() - stagedAt > 1500) finish(); }; // grace period while the sheet is opening
+    const onPrintQueryChange = (event) => { if (!event.matches) finish(); };
+
+    window.addEventListener('afterprint', finish);
+    document.addEventListener('pointerdown', onNextTap, true);
+    if (printQuery) {
+      if (printQuery.addEventListener) printQuery.addEventListener('change', onPrintQueryChange);
+      else if (printQuery.addListener) printQuery.addListener(onPrintQueryChange);
+    }
+    fallbackTimer = window.setTimeout(finish, 120000); // last resort: never leave print mode on forever
+    teardownStagedReport = finish;
+  }
 
   function initDownloadPdf() {
     if (!dom.downloadPdfBtn) return; // safe no-op if the button isn't on the page
@@ -683,106 +796,16 @@
     dom.downloadPdfBtn.addEventListener('click', () => {
       if (!dom.results) return;
 
-      // 1. Hidden iframe — its own separate document, so printing it can
-      //    never be affected by (or bleed into) the live page.
-      const printFrame = document.createElement('iframe');
-      printFrame.setAttribute('aria-hidden', 'true');
-      printFrame.style.position = 'fixed';
-      printFrame.style.right = '0';
-      printFrame.style.bottom = '0';
-      printFrame.style.width = '0';
-      printFrame.style.height = '0';
-      printFrame.style.border = '0';
-      document.body.appendChild(printFrame);
-
-      // 2. Clone just the results, with the toolbar (Download button)
-      //    stripped out — it should never appear in its own printout.
-      const resultsClone = dom.results.cloneNode(true);
-      const toolbarClone = resultsClone.querySelector('.results-toolbar');
-      if (toolbarClone) toolbarClone.remove();
-
       const studentCode = ((dom.studentCodeDisplay && dom.studentCodeDisplay.textContent) || 'Student').trim();
-      const liveStylesheet = document.querySelector('link[rel="stylesheet"][href*="style.css"]');
-      const styleHref = liveStylesheet ? liveStylesheet.href : 'style.css';
+      stageReportForPrint(buildReportRoot(), I18N.t('print.docTitle', { code: studentCode }));
 
-      const frameDoc = printFrame.contentWindow.document;
-      frameDoc.open();
-      // lang/dir follow the portal's current language, so an Arabic report
-      // prints right-to-left. The cloned results are already translated;
-      // individual name/notes/email fields keep their own dir="auto"
-      // (cloned along with every other attribute). No data-theme attribute
-      // is set, even if the student currently has Dark Mode on: that
-      // guarantees the printed page always uses style.css's default
-      // (light) colors, never dark-mode text colors that would be
-      // unreadable against white paper.
-      frameDoc.write(`<!DOCTYPE html>
-<html lang="${I18N.getLang()}" dir="${I18N.getDir()}">
-<head>
-<meta charset="UTF-8">
-<title>${escapeHtml(I18N.t('print.docTitle', { code: studentCode }))}</title>
-<link rel="stylesheet" href="${styleHref}">
-</head>
-<body></body>
-</html>`);
-      frameDoc.close();
-
-      // Report banner + footer — the only genuinely new markup this
-      // feature needs (everything else reuses the real #results DOM).
-      // Built from CONFIG rather than hardcoded, so it stays correct if
-      // the course/organization branding ever changes.
-      const courseName = I18N.cfgOr('courseName', null) || 'Student Academic Report';
-      const primaryOrgName = (CONFIG.organizations && CONFIG.organizations.primary && CONFIG.organizations.primary.name) || '';
-      const reportDate = new Date().toLocaleDateString(I18N.locale(), { year: 'numeric', month: 'long', day: 'numeric' });
-
-      const header = frameDoc.createElement('div');
-      header.className = 'print-header';
-      header.innerHTML = `
-        <div>
-          <div class="print-header__title">${escapeHtml(I18N.t('print.title'))}</div>
-          <div class="print-header__subtitle">${escapeHtml(I18N.t('print.subtitle', { course: courseName }))}</div>
-        </div>
-        <div class="print-header__date">${reportDate}</div>
-      `;
-
-      const footer = frameDoc.createElement('div');
-      footer.className = 'print-footer';
-      footer.textContent = primaryOrgName
-        ? I18N.t('print.footerOrg', { org: primaryOrgName })
-        : I18N.t('print.footer');
-
-      frameDoc.body.appendChild(header);
-      frameDoc.body.appendChild(resultsClone);
-      frameDoc.body.appendChild(footer);
-
-      // 3. The iframe is a separate document, so it only has style.css's
-      //    DEFAULT brand colors — mirror the same runtime override
-      //    applyBranding() already applies on the live page from
-      //    config.js, so a customized brand color prints correctly too.
-      if (window.APP_CONFIG && window.APP_CONFIG.colors) {
-        const root = frameDoc.documentElement.style;
-        if (window.APP_CONFIG.colors.primary) root.setProperty('--color-primary', window.APP_CONFIG.colors.primary);
-        if (window.APP_CONFIG.colors.secondary) root.setProperty('--color-accent', window.APP_CONFIG.colors.secondary);
-      }
-
-      // 4. Print only once style.css has actually finished loading —
-      //    printing a beat too early would show the report unstyled.
-      const cleanupAndPrint = () => {
-        printFrame.contentWindow.focus();
-        printFrame.contentWindow.print();
-        // Give the print dialog a moment to open before the iframe
-        // (and the stylesheet it depends on) is torn down.
-        window.setTimeout(() => printFrame.remove(), 1000);
-      };
-
-      const linkEl = frameDoc.querySelector('link[rel="stylesheet"]');
-      if (linkEl) {
-        linkEl.addEventListener('load', cleanupAndPrint, { once: true });
-        linkEl.addEventListener('error', () => {
-          console.error('CourseTrack — print stylesheet failed to load in the print frame.');
-          cleanupAndPrint(); // still let them print rather than silently doing nothing
-        }, { once: true });
-      } else {
-        cleanupAndPrint();
+      // MUST stay synchronous inside this handler (see the note above):
+      // no await, no setTimeout, no stylesheet-load wait before print().
+      try {
+        window.print();
+      } catch (err) {
+        console.error('CourseTrack — print failed:', err);
+        if (teardownStagedReport) teardownStagedReport();
       }
     });
   }

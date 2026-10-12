@@ -751,3 +751,54 @@ img, svg { display: block; }
     border-right: 4px solid var(--color-primary);
   }
 }
+
+/* =======================================================================
+   22. Download Report Card (PDF) — print the live page, report only
+   -----------------------------------------------------------------------
+   student.js builds a hidden #print-root and calls window.print() on the
+   page itself (the old hidden-iframe approach did not work on phones).
+   Everything below is inert on screen; the hiding rules only apply while
+   <body class="printing-report"> is set, i.e. while a report is printing.
+   ======================================================================= */
+
+/* On screen the staged report is never visible. */
+#print-root { display: none; }
+
+/* The report always prints on the LIGHT palette — even if the student is
+   in Dark Mode, whose near-white text variables would be unreadable on
+   white paper. Re-declaring the colour tokens on #print-root itself beats
+   the values it would otherwise inherit from <html data-theme="dark">.
+   (Fonts are deliberately NOT redeclared here, so Arabic keeps Cairo.)   */
+#print-root {
+  --color-primary: #2f54eb;
+  --color-primary-dark: #1e3fc4;
+  --color-primary-light: #7391f5;
+  --color-accent: #8fc7ff;
+  --text-strong: #1e2a47;
+  --text-body: #46536c;
+  --text-muted: #7c8aa6;
+  --glass-bg: rgba(255, 255, 255, 0.72);
+  --glass-bg-strong: rgba(255, 255, 255, 0.9);
+  --glass-border: rgba(30, 42, 71, 0.08);
+  --glass-shadow: none;
+  --glass-shadow-hover: none;
+}
+
+@media print {
+  /* Report only: hide the whole live page, show the staged report. */
+  body.printing-report > *:not(#print-root) { display: none !important; }
+  body.printing-report #print-root { display: block !important; }
+
+  /* The clone's id was stripped (no duplicate ids), so the existing
+     `#results { … }` print rule is mirrored here by class. */
+  #print-root .results { width: 100% !important; margin: 0 !important; padding: 0 !important; }
+
+  /* Entrance animations start from opacity 0; a print snapshot taken at
+     the moment the report is shown must never catch that first frame. */
+  #print-root,
+  #print-root * {
+    animation: none !important;
+    transition: none !important;
+    opacity: 1 !important;
+  }
+}
