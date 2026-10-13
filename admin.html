@@ -17,7 +17,7 @@
 
   <link rel="stylesheet" href="style.css" />
 </head>
-<body>
+<body class="auth-locked">
 
   <div id="loading-screen" class="loading-screen" aria-live="polite">
     <div class="loader-orbit">
@@ -26,6 +26,34 @@
       <span class="loader-ring loader-ring--delay"></span>
     </div>
     <p class="loader-text" data-i18n="loading.admin">Preparing Admin Dashboard…</p>
+  </div>
+
+  <!-- ADMIN AUTH GATE — visible while <body class="auth-locked"> (set here in the
+       HTML, so the page is locked by default and fails closed). admin.js removes
+       that class only after the passcode is verified. -->
+  <div id="auth-gate" class="auth-gate" role="dialog" aria-modal="true" aria-labelledby="auth-title" aria-describedby="auth-desc">
+    <form id="auth-form" class="auth-card glass-card" autocomplete="off" novalidate>
+      <div class="auth-lock" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="10.5" width="16" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/><path d="M12 15v2.2"/></svg>
+      </div>
+      <h2 id="auth-title" class="auth-title" data-i18n="auth.title">Admin Access</h2>
+      <p id="auth-desc" class="auth-desc" data-i18n="auth.subtitle">Enter the admin passcode to open the dashboard.</p>
+
+      <label class="auth-field__label" for="auth-passcode" data-i18n="auth.label">Admin Passcode</label>
+      <div class="auth-input-wrap">
+        <input id="auth-passcode" type="password" dir="ltr" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="256" placeholder="Enter passcode" data-i18n-placeholder="auth.placeholder" />
+        <button type="button" id="auth-toggle" class="auth-toggle" aria-pressed="false" aria-label="Show passcode" data-i18n-aria="auth.show">
+          <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="auth-toggle__slash" d="M3 3l18 18"/></svg>
+        </button>
+      </div>
+
+      <p id="auth-error" class="auth-error" role="alert" aria-live="assertive" hidden></p>
+      <noscript><p class="auth-error">JavaScript is required to open the admin dashboard.</p></noscript>
+
+      <button type="submit" id="auth-submit" class="btn btn--primary auth-submit">
+        <span id="auth-submit-label" data-i18n="auth.submit">Unlock Dashboard</span>
+      </button>
+    </form>
   </div>
 
   <div class="app-shell">
@@ -64,6 +92,9 @@
           <span data-i18n="admin.studentPortal">Student Portal</span>
         </a>
 
+        <button id="logout-btn" class="theme-toggle logout-btn" type="button" hidden aria-label="Sign out" title="Sign out" data-i18n-aria="auth.signOut" data-i18n-title="auth.signOut">
+          <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3"/><path d="M16 17l5-5-5-5M21 12H9"/></svg>
+        </button>
         <button id="lang-toggle" class="lang-toggle" type="button" aria-pressed="false" data-i18n-aria="lang.switchAria" data-i18n-title="lang.switchAria">
           <span class="lang-toggle__opt is-active" data-lang-opt="en">EN</span>
           <span class="lang-toggle__opt" data-lang-opt="ar" lang="ar">عربي</span>
@@ -76,7 +107,7 @@
       </div>
     </header>
 
-    <main class="app-main">
+    <main class="app-main" id="admin-dashboard" inert aria-hidden="true">
 
       <!-- ---------- COURSE INFORMATION (read-only, config-driven) ---------- -->
       <div class="glass-card info-card">

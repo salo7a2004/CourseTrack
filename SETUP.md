@@ -86,6 +86,54 @@ Open `admin.html`, drop in your `.xlsx`, and watch the steps:
 Uploading -> Reading -> Processing -> Syncing to Firebase -> Finished. Then
 open `index.html` and search a student code - no redeploy needed.
 
+## 5. Admin passcode gate (admin.html)
+
+`admin.html` now opens on a passcode screen. The dashboard is hidden (and
+inert) in the page's own markup, and nothing that touches Firebase or the
+Excel upload starts until the passcode is accepted. Once accepted, the
+admin stays signed in until that browser tab is closed (`sessionStorage`),
+or until they press the Sign out button in the header.
+
+**Set it up**
+1. On your own computer, open `make-admin-passcode.html` in a browser (it
+   runs fully offline; you don't need to deploy it).
+2. Choose a long passphrase (12+ characters, ideally 4+ random words), click
+   *Generate hash*, and paste the resulting line into `config.js`, replacing
+   `adminPasscodeHash: '',`.
+3. Deploy `config.js`. Until a hash is set, `admin.html` stays locked and says
+   the passcode is not configured.
+
+`config.js` stores only a salted PBKDF2 hash, never the passcode. To change
+the passcode, generate a new line and replace it; every existing session is
+signed out automatically. If you forget the passcode, just generate a new one.
+
+**Behaviour**
+- 5 wrong attempts lock the form for 30 s; each further lockout doubles
+  (up to 15 min). A page reload does not reset it.
+- It needs a secure context for hashing: HTTPS, `localhost`, or a local file.
+- Lower-priority fallbacks exist for compatibility — `adminPasscode` (plain
+  text) and, last of all, `firebase.databaseSecret` — but both put the
+  passcode in a public file in readable form. Don't use them for a live site.
+
+**What this gate is — and is not**
+
+It keeps students and casual visitors out of the admin screen. It is **not**
+access control, and it cannot be, because everything it relies on runs in the
+visitor's browser:
+
+- `config.js` and `admin.js` are public files. Anyone can read the hash and
+  try to guess the passcode offline (a long passphrase is the only defence),
+  or open DevTools and remove the overlay or edit `sessionStorage`.
+- It does nothing to the database itself. Anyone who knows your
+  `databaseURL` can send requests to Firebase directly, with or without ever
+  loading `admin.html`.
+
+What actually protects your data is the Firebase rules from section 3, with
+writes locked (`".write": false`, or Option A's signed-in-admin rule). Treat
+the passcode gate as a convenience on top of that, not a replacement. In
+particular, never deploy a real `databaseSecret` in `config.js`: it is a
+full-admin credential and the gate cannot hide it.
+
 ## Privacy note
 With public read on `/students`, the Student Portal downloads every
 record and filters in the browser, so anyone who opens

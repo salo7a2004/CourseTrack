@@ -159,6 +159,23 @@
       'err.fbTimeout': 'Firebase took too long to respond. Please try again.',
       'err.fbDenied': 'Firebase denied this request — check firebase.databaseSecret in config.js and your database rules.',
       'err.fbFailed': 'Firebase request failed: {reason}',
+
+      /* ---- admin authentication gate ---- */
+      'auth.title': 'Admin Access',
+      'auth.subtitle': 'Enter the admin passcode to open the dashboard.',
+      'auth.label': 'Admin Passcode',
+      'auth.placeholder': 'Enter passcode',
+      'auth.show': 'Show passcode',
+      'auth.hide': 'Hide passcode',
+      'auth.submit': 'Unlock Dashboard',
+      'auth.checking': 'Verifying…',
+      'auth.empty': 'Please enter the passcode.',
+      'auth.wrongLeft': 'Incorrect passcode. Attempts left before a temporary lock: {left}.',
+      'auth.locked': 'Too many incorrect attempts. Try again in {time}.',
+      'auth.notConfigured': 'The admin passcode is not configured. Add adminPasscodeHash to config.js (see SETUP.md), then reload this page.',
+      'auth.badConfig': 'The admin passcode setting in config.js is malformed. Generate a new one with make-admin-passcode.html.',
+      'auth.insecureContext': 'This page must be opened over HTTPS (or from localhost) so the passcode can be verified securely.',
+      'auth.signOut': 'Sign out',
     },
 
     ar: {
@@ -272,6 +289,23 @@
       'err.fbTimeout': 'استغرق Firebase وقتًا طويلًا للرد. يُرجى المحاولة مرة أخرى.',
       'err.fbDenied': 'رفض Firebase هذا الطلب — تحقق من firebase.databaseSecret في ملف config.js ومن قواعد قاعدة البيانات.',
       'err.fbFailed': 'فشل طلب Firebase: {reason}',
+
+      /* ---- admin authentication gate ---- */
+      'auth.title': 'دخول المسؤول',
+      'auth.subtitle': 'أدخل رمز مرور المسؤول لفتح لوحة الإدارة.',
+      'auth.label': 'رمز مرور المسؤول',
+      'auth.placeholder': 'أدخل رمز المرور',
+      'auth.show': 'إظهار رمز المرور',
+      'auth.hide': 'إخفاء رمز المرور',
+      'auth.submit': 'فتح لوحة الإدارة',
+      'auth.checking': 'جارٍ التحقق…',
+      'auth.empty': 'يُرجى إدخال رمز المرور.',
+      'auth.wrongLeft': 'رمز المرور غير صحيح. المحاولات المتبقية قبل القفل المؤقت: {left}.',
+      'auth.locked': 'محاولات خاطئة كثيرة. حاول مرة أخرى بعد {time}.',
+      'auth.notConfigured': 'لم يتم إعداد رمز مرور المسؤول. أضف adminPasscodeHash إلى ملف config.js (راجع SETUP.md) ثم أعد تحميل الصفحة.',
+      'auth.badConfig': 'إعداد رمز مرور المسؤول في ملف config.js غير صالح. أنشئ إعدادًا جديدًا باستخدام make-admin-passcode.html.',
+      'auth.insecureContext': 'يجب فتح هذه الصفحة عبر HTTPS (أو من localhost) حتى يمكن التحقق من رمز المرور بشكل آمن.',
+      'auth.signOut': 'تسجيل الخروج',
     },
   };
 

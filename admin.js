@@ -34,6 +34,15 @@
     loadingScreen: document.getElementById('loading-screen'),
     themeToggle: document.getElementById('theme-toggle'),
 
+    dashboard: document.getElementById('admin-dashboard'),
+    authForm: document.getElementById('auth-form'),
+    authInput: document.getElementById('auth-passcode'),
+    authToggle: document.getElementById('auth-toggle'),
+    authError: document.getElementById('auth-error'),
+    authSubmit: document.getElementById('auth-submit'),
+    authSubmitLabel: document.getElementById('auth-submit-label'),
+    logoutBtn: document.getElementById('logout-btn'),
+
     headerCourseName: document.getElementById('header-course-name'),
     courseLogoImg: document.getElementById('course-logo-img'),
     courseLogoPlaceholder: document.getElementById('course-logo-placeholder'),
@@ -646,6 +655,303 @@
     }
   }
 
+  /* =====================================================================
+     ADMIN AUTHENTICATION GATE
+     ---------------------------------------------------------------------
+     What this is: a UI gate. admin.html is locked in its own markup
+     (<body class="auth-locked">, <main inert>); checkAuth() unlocks it
+     after a correct passcode, and remembers that in sessionStorage so the
+     admin stays signed in until the tab is closed.
+
+     What this is NOT: access control. config.js and this script are public
+     files, so a determined visitor can read or bypass any browser-side
+     check. Firebase rules are what protect the data — see SETUP.md.
+
+     Hardening that IS possible client-side, all implemented here:
+       • the passcode is never stored — config.js holds a salted PBKDF2
+         hash (generate it with make-admin-passcode.html);
+       • comparisons are constant-time;
+       • the session marker is bound to the configured credential, so
+         changing the passcode signs every old session out;
+       • repeated wrong attempts trigger a growing lockout (kept in
+         sessionStorage, so a reload doesn't reset it — a new tab does,
+         which is why this is friction, not a security boundary);
+       • nothing that touches Firebase or the upload pipeline is started
+         until the gate has opened (see startDashboard()).
+     ===================================================================== */
+
+  const AUTH_SESSION_KEY = 'coursetrack_admin_session';
+  const AUTH_ATTEMPTS_KEY = 'coursetrack_admin_attempts';
+  const AUTH_MAX_ATTEMPTS = 5;                 // wrong tries before a lockout
+  const AUTH_BASE_LOCK_MS = 30 * 1000;         // first lockout; doubles each time
+  const AUTH_MAX_LOCK_MS = 15 * 60 * 1000;
+  const AUTH_HASH_PREFIX = 'pbkdf2-sha256';    // format: pbkdf2-sha256$<iterations>$<saltHex>$<hashHex>
+
+  function bytesToHex(bytes) {
+    return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  function hexToBytes(hex) {
+    const out = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < out.length; i += 1) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+    return out;
+  }
+
+  /** Constant-time string comparison (no early exit on the first mismatch). */
+  function safeEqual(a, b) {
+    const x = String(a);
+    const y = String(b);
+    let diff = x.length ^ y.length;
+    const len = Math.max(x.length, y.length);
+    for (let i = 0; i < len; i += 1) diff |= (x.charCodeAt(i) || 0) ^ (y.charCodeAt(i) || 0);
+    return diff === 0;
+  }
+
+  async function sha256Hex(text) {
+    const digest = await window.crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return bytesToHex(new Uint8Array(digest));
+  }
+
+  /** Reads the configured credential. Priority: adminPasscodeHash (recommended)
+   *  -> adminPasscode (plain text) -> firebase.databaseSecret (plain text).
+   *  Returns null when nothing is configured, { kind: 'invalid' } when the
+   *  hash string is malformed. `fingerprint` binds sessions to the credential. */
+  function readAdminCredential() {
+    const hash = typeof CONFIG.adminPasscodeHash === 'string' ? CONFIG.adminPasscodeHash.trim() : '';
+    if (hash) {
+      const parts = hash.split('$');
+      const iterations = parseInt(parts[1], 10);
+      const valid = parts.length === 4
+        && parts[0] === AUTH_HASH_PREFIX
+        && iterations >= 10000 && iterations <= 5000000
+        && /^[0-9a-f]{16,}$/i.test(parts[2]) && parts[2].length % 2 === 0
+        && /^[0-9a-f]{64}$/i.test(parts[3]);
+      if (!valid) return { kind: 'invalid' };
+      return { kind: 'pbkdf2', iterations, salt: hexToBytes(parts[2]), hash: parts[3].toLowerCase(), fingerprint: hash };
+    }
+    const plain = typeof CONFIG.adminPasscode === 'string' && CONFIG.adminPasscode
+      ? CONFIG.adminPasscode
+      : (CONFIG.firebase && typeof CONFIG.firebase.databaseSecret === 'string' ? CONFIG.firebase.databaseSecret : '');
+    if (plain) return { kind: 'plain', secret: plain, fingerprint: 'plain|' + plain };
+    return null;
+  }
+
+  async function verifyPasscode(input, credential) {
+    if (credential.kind === 'plain') return safeEqual(input, credential.secret);
+    const key = await window.crypto.subtle.importKey('raw', new TextEncoder().encode(input), 'PBKDF2', false, ['deriveBits']);
+    const bits = await window.crypto.subtle.deriveBits(
+      { name: 'PBKDF2', hash: 'SHA-256', salt: credential.salt, iterations: credential.iterations }, key, 256);
+    return safeEqual(bytesToHex(new Uint8Array(bits)), credential.hash);
+  }
+
+  /* ---- session (sessionStorage: cleared automatically when the tab closes) ---- */
+  async function sessionProof(credential) {
+    return sha256Hex('coursetrack-admin-session|' + credential.fingerprint);
+  }
+
+  async function hasValidSession(credential) {
+    try {
+      const stored = window.sessionStorage.getItem(AUTH_SESSION_KEY);
+      return !!stored && safeEqual(stored, await sessionProof(credential));
+    } catch (err) { return false; }
+  }
+
+  async function startSession(credential) {
+    try { window.sessionStorage.setItem(AUTH_SESSION_KEY, await sessionProof(credential)); } catch (err) { /* storage blocked: re-prompt on reload */ }
+  }
+
+  function endSession() {
+    try {
+      window.sessionStorage.removeItem(AUTH_SESSION_KEY);
+      window.sessionStorage.removeItem(AUTH_ATTEMPTS_KEY);
+    } catch (err) { /* nothing to clear */ }
+  }
+
+  /* ---- failed-attempt throttling ---- */
+  function readAttempts() {
+    try {
+      const a = JSON.parse(window.sessionStorage.getItem(AUTH_ATTEMPTS_KEY) || '{}');
+      return { count: Number(a.count) || 0, level: Number(a.level) || 0, lockUntil: Number(a.lockUntil) || 0 };
+    } catch (err) { return { count: 0, level: 0, lockUntil: 0 }; }
+  }
+
+  function writeAttempts(state) {
+    try { window.sessionStorage.setItem(AUTH_ATTEMPTS_KEY, JSON.stringify(state)); } catch (err) { /* non-fatal */ }
+  }
+
+  function formatLockTime(ms) {
+    const total = Math.max(1, Math.ceil(ms / 1000));
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+  }
+
+  /* ---- gate UI ---- */
+  function lockDashboard() {
+    document.body.classList.add('auth-locked');
+    dom.dashboard.setAttribute('inert', '');
+    dom.dashboard.setAttribute('aria-hidden', 'true');
+    dom.logoutBtn.hidden = true;
+  }
+
+  function unlockDashboard() {
+    document.body.classList.remove('auth-locked');
+    dom.dashboard.removeAttribute('inert');
+    dom.dashboard.removeAttribute('aria-hidden');
+    dom.logoutBtn.hidden = false;
+    dom.dashboard.setAttribute('tabindex', '-1');
+    dom.dashboard.focus({ preventScroll: true });   // the gate (and its focused input) just disappeared
+  }
+
+  function showAuthMessage(key, vars, shake) {
+    I18N.setText(dom.authError, key, vars);         // keyed, so it re-translates on a language switch
+    dom.authError.hidden = false;
+    dom.authError.classList.remove('is-shaking');
+    if (shake) { void dom.authError.offsetWidth; dom.authError.classList.add('is-shaking'); }
+  }
+
+  function clearAuthMessage() {
+    dom.authError.hidden = true;
+    dom.authError.removeAttribute('data-i18n');
+    dom.authError.removeAttribute('data-i18n-vars');
+    dom.authError.textContent = '';
+  }
+
+  function setFormEnabled(enabled) {
+    dom.authInput.disabled = !enabled;
+    dom.authSubmit.disabled = !enabled;     // the show/hide-passcode button stays usable
+  }
+
+  /**
+   * checkAuth() — the gate. Returns a Promise:
+   *   • resolves true  as soon as the admin is authenticated (a valid
+   *     session already exists, or the correct passcode is entered);
+   *   • resolves false when the page can never unlock (passcode not
+   *     configured / malformed, or no Web Crypto) — it stays locked;
+   *   • otherwise stays pending while the modal waits for the passcode.
+   * Callers start the dashboard ONLY in the `true` branch.
+   */
+  function checkAuth() {
+    return new Promise((resolve) => {
+      const credential = readAdminCredential();
+      const cryptoAvailable = !!(window.crypto && window.crypto.subtle);
+      let lockTimer = null;
+      let busy = false;
+
+      lockDashboard();                              // fail closed, whatever happens next
+      clearAuthMessage();
+
+      // Language switch while locked: re-translate the eye-button label too.
+      dom.authToggle.addEventListener('click', () => {
+        const reveal = dom.authInput.type === 'password';
+        dom.authInput.type = reveal ? 'text' : 'password';
+        dom.authToggle.setAttribute('aria-pressed', String(reveal));
+        dom.authToggle.setAttribute('data-i18n-aria', reveal ? 'auth.hide' : 'auth.show');
+        I18N.apply(dom.authToggle);
+        dom.authInput.focus();
+      });
+
+      dom.logoutBtn.addEventListener('click', () => {
+        endSession();
+        window.location.reload();                   // simplest way to drop all dashboard state
+      });
+
+      // ---- states that can never unlock ----
+      if (!credential) { setFormEnabled(false); showAuthMessage('auth.notConfigured'); resolve(false); return; }
+      if (credential.kind === 'invalid') { setFormEnabled(false); showAuthMessage('auth.badConfig'); resolve(false); return; }
+      if (!cryptoAvailable) { setFormEnabled(false); showAuthMessage('auth.insecureContext'); resolve(false); return; }
+
+      const finishUnlock = async () => {
+        window.clearInterval(lockTimer);
+        dom.authInput.value = '';
+        try { window.sessionStorage.removeItem(AUTH_ATTEMPTS_KEY); } catch (err) { /* non-fatal */ }
+        await startSession(credential);
+        unlockDashboard();
+        resolve(true);
+      };
+
+      // ---- lockout countdown (also restores a lockout after a reload) ----
+      const renderLockState = () => {
+        const remaining = readAttempts().lockUntil - Date.now();
+        if (remaining > 0) {
+          setFormEnabled(false);
+          showAuthMessage('auth.locked', { time: formatLockTime(remaining) });
+          return true;
+        }
+        if (dom.authInput.disabled && !busy) {
+          setFormEnabled(true);
+          clearAuthMessage();
+          dom.authInput.focus();
+        }
+        return false;
+      };
+      const startLockTimer = () => {
+        window.clearInterval(lockTimer);
+        lockTimer = window.setInterval(() => { if (!renderLockState()) window.clearInterval(lockTimer); }, 1000);
+      };
+
+      dom.authForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (busy) return;
+        if (renderLockState()) return;              // still locked out
+
+        const entered = dom.authInput.value;
+        if (!entered) { showAuthMessage('auth.empty', null, true); dom.authInput.focus(); return; }
+
+        busy = true;
+        dom.authSubmit.disabled = true;
+        I18N.setText(dom.authSubmitLabel, 'auth.checking');
+
+        let ok = false;
+        try { ok = await verifyPasscode(entered, credential); } catch (err) { console.error('CourseTrack Admin — passcode check failed:', err); }
+
+        busy = false;
+        I18N.setText(dom.authSubmitLabel, 'auth.submit');
+        dom.authSubmit.disabled = false;
+
+        if (ok) { await finishUnlock(); return; }
+
+        dom.authInput.value = '';
+        const state = readAttempts();
+        state.count += 1;
+        if (state.count >= AUTH_MAX_ATTEMPTS) {
+          state.level += 1;
+          state.count = 0;
+          state.lockUntil = Date.now() + Math.min(AUTH_BASE_LOCK_MS * Math.pow(2, state.level - 1), AUTH_MAX_LOCK_MS);
+          writeAttempts(state);
+          renderLockState();
+          startLockTimer();
+        } else {
+          writeAttempts(state);
+          showAuthMessage('auth.wrongLeft', { left: AUTH_MAX_ATTEMPTS - state.count }, true);
+          dom.authInput.focus();
+        }
+      });
+
+      // ---- start: valid session -> straight in; otherwise show the modal ----
+      hasValidSession(credential).then((valid) => {
+        if (valid) {
+          unlockDashboard();
+          resolve(true);
+          return;
+        }
+        if (renderLockState()) startLockTimer();    // a lockout survives a page reload
+        else dom.authInput.focus();
+      });
+    });
+  }
+
+  let dashboardStarted = false;
+
+  /** Everything that touches Firebase or the upload/SheetJS pipeline starts
+   *  here — and is only ever called after checkAuth() resolves true. The
+   *  functions inside are unchanged; they are simply no longer started on
+   *  page load. */
+  function startDashboard() {
+    if (dashboardStarted) return;
+    dashboardStarted = true;
+    initUpload();
+    loadInitialStats();
+  }
+
   function init() {
     window.setTimeout(hideLoadingScreen, 700);
     window.addEventListener('load', () => window.setTimeout(hideLoadingScreen, 1100));
@@ -657,9 +963,13 @@
         applyBrandText();
         dom.statUpdated.textContent = formatDateTime(lastUpdateIso);   // re-localise the date
       });
-      initUpload();
       dom.themeToggle.addEventListener('click', toggleTheme);
-      loadInitialStats();
+
+      // Branding, theme and language run first (the modal needs them);
+      // the dashboard itself starts only once the admin has authenticated.
+      checkAuth()
+        .then((authenticated) => { if (authenticated) startDashboard(); })
+        .catch((err) => console.error('CourseTrack Admin — authentication error (dashboard stays locked):', err));
     } catch (err) {
       console.error('CourseTrack Admin — initialization error:', err);
       hideLoadingScreen();

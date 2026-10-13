@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <!-- Fully offline: this page cannot load anything or send anything anywhere. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+  <title>CourseTrack — Admin passcode hash generator</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #f2f6ff; color: #1e2a47;
+           font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; }
+    main { width: min(560px, 100%); background: #fff; border-radius: 18px; padding: 30px; box-shadow: 0 12px 40px rgba(30, 42, 71, 0.12); }
+    h1 { margin: 0 0 6px; font-size: 1.3rem; }
+    p { margin: 0 0 16px; color: #5b6783; font-size: 0.92rem; line-height: 1.5; }
+    label { display: block; margin: 14px 0 6px; font-size: 0.8rem; font-weight: 700; color: #5b6783; }
+    input { width: 100%; padding: 12px 14px; border: 1.5px solid #c9d4f5; border-radius: 12px; font-size: 1rem; }
+    input:focus { outline: none; border-color: #2f54eb; box-shadow: 0 0 0 4px rgba(47, 84, 235, 0.14); }
+    button { margin-top: 18px; padding: 12px 20px; border: 0; border-radius: 12px; background: #2f54eb; color: #fff; font-weight: 600; font-size: 0.95rem; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: progress; }
+    button.secondary { background: #e8eeff; color: #1e3fc4; margin-left: 8px; }
+    #msg { margin: 14px 0 0; font-weight: 600; font-size: 0.88rem; }
+    #msg.err { color: #e11d48; } #msg.warn { color: #b45309; } #msg.ok { color: #16a34a; }
+    pre { margin: 14px 0 0; padding: 14px; background: #0f172a; color: #e2e8f0; border-radius: 12px; font-size: 0.8rem; white-space: pre-wrap; word-break: break-all; }
+    ol { color: #5b6783; font-size: 0.88rem; line-height: 1.6; padding-inline-start: 20px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Admin passcode hash generator</h1>
+  <p>Runs entirely in this browser tab — nothing is uploaded or stored. Open this file from <strong>your own computer</strong>; it does not need to be deployed with the site.</p>
+
+  <label for="pw">New admin passcode</label>
+  <input id="pw" type="password" autocomplete="new-password" spellcheck="false" />
+  <label for="pw2">Confirm passcode</label>
+  <input id="pw2" type="password" autocomplete="new-password" spellcheck="false" />
+
+  <button id="go" type="button">Generate hash</button>
+  <p id="msg" role="alert"></p>
+
+  <div id="result" hidden>
+    <pre id="out"></pre>
+    <button id="copy" type="button" class="secondary">Copy</button>
+    <ol>
+      <li>Paste that line into <code>config.js</code>, replacing the existing <code>adminPasscodeHash</code> line.</li>
+      <li>Deploy <code>config.js</code>. Remember the passcode — it cannot be recovered from the hash.</li>
+      <li>Use a long passphrase (12+ characters, ideally 4+ random words). The hash is public, so its strength is the only thing slowing down a guesser.</li>
+    </ol>
+  </div>
+</main>
+
+<script>
+  // MUST match readAdminCredential()/verifyPasscode() in admin.js:
+  // PBKDF2-HMAC-SHA256, 16-byte random salt, 256-bit output, hex encoded.
+  var ITERATIONS = 150000;
+  var $ = function (id) { return document.getElementById(id); };
+  function toHex(bytes) { return Array.prototype.map.call(bytes, function (b) { return ('0' + b.toString(16)).slice(-2); }).join(''); }
+  function say(text, cls) { $('msg').textContent = text; $('msg').className = cls || ''; }
+
+  $('go').addEventListener('click', async function () {
+    $('result').hidden = true;
+    var pw = $('pw').value;
+    if (!pw) return say('Enter a passcode first.', 'err');
+    if (pw !== $('pw2').value) return say('The two passcodes do not match.', 'err');
+    if (!(window.crypto && window.crypto.subtle)) return say('Web Crypto is unavailable here — open this file in a current browser (Chrome, Edge, Firefox, Safari).', 'err');
+
+    $('go').disabled = true; say('Working…');
+    try {
+      var salt = window.crypto.getRandomValues(new Uint8Array(16));
+      var key = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveBits']);
+      var bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: salt, iterations: ITERATIONS }, key, 256);
+      var value = 'pbkdf2-sha256$' + ITERATIONS + '$' + toHex(salt) + '$' + toHex(new Uint8Array(bits));
+      $('out').textContent = "adminPasscodeHash: '" + value + "',";
+      $('result').hidden = false;
+      if (pw.length < 12) say('Done — but this passcode is short (' + pw.length + ' characters). A longer one is much safer.', 'warn');
+      else say('Done.', 'ok');
+    } catch (e) {
+      say('Could not generate the hash: ' + e.message, 'err');
+    } finally { $('go').disabled = false; }
+  });
+
+  $('copy').addEventListener('click', function () {
+    var text = $('out').textContent;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { say('Copied to the clipboard.', 'ok'); }, function () { say('Select the line above and copy it manually.', 'warn'); });
+    } else {
+      var r = document.createRange(); r.selectNodeContents($('out')); var s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      say('Line selected — press Ctrl/Cmd+C to copy.', 'warn');
+    }
+  });
+</script>
+</body>
+</html>

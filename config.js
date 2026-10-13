@@ -48,6 +48,22 @@ window.APP_CONFIG = {
     developedBy: 'Developed by Salah Hossam',
   },
 
+  // ---- Admin page passcode gate ------------------------------------------
+  // admin.html asks for this passcode before it shows the dashboard or
+  // contacts Firebase. Paste the line produced by make-admin-passcode.html
+  // (open that file on YOUR computer; it runs entirely offline). It stores a
+  // salted PBKDF2 hash, never the passcode itself.
+  //
+  // IMPORTANT: config.js is a public file, and this gate runs in the
+  // browser, so it keeps casual visitors out of the admin UI but is NOT
+  // access control — Firebase rules are what protect the data. Read the
+  // "Admin passcode gate" section of SETUP.md before relying on it.
+  //
+  // Leave '' and admin.html stays locked ("not configured").
+  adminPasscodeHash: '',
+  // Lower-priority fallbacks, NOT recommended (plain text in a public file):
+  //   adminPasscode: '',   — then firebase.databaseSecret is tried last.
+
   // ---- Firebase Realtime Database ----------------------------------------
   // This is what makes Firebase the single source of truth:
   //   • student.js sends GET requests to  {databaseURL}/students.json

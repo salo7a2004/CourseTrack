@@ -802,3 +802,90 @@ img, svg { display: block; }
     opacity: 1 !important;
   }
 }
+
+/* =======================================================================
+   23. Admin authentication gate (admin.html)
+   -----------------------------------------------------------------------
+   admin.html ships with <body class="auth-locked"> and
+   <main id="admin-dashboard" inert>, so the page is locked BEFORE any
+   script runs. admin.js removes both only after the passcode checks out.
+   Note: this is a UI gate, not access control — see SETUP.md.
+   ======================================================================= */
+
+/* ---- LOCKED / HIDDEN STATE ---- */
+body.auth-locked { overflow: hidden; }
+body.auth-locked .app-main {
+  visibility: hidden;            /* not painted, not focusable, not read aloud */
+  pointer-events: none;
+  user-select: none; -webkit-user-select: none;
+}
+/* The header stays usable above the overlay (language + theme toggles). */
+body.auth-locked .app-header { position: relative; z-index: 600; }
+
+/* ---- BLURRED OVERLAY ---- */
+.auth-gate { display: none; }
+body.auth-locked .auth-gate {
+  position: fixed; inset: 0; z-index: 500;
+  display: flex; align-items: center; justify-content: center;
+  padding: 110px 18px 28px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(16px) saturate(120%); -webkit-backdrop-filter: blur(16px) saturate(120%);
+  animation: fade-in 0.25s ease;
+}
+
+/* ---- MODAL CARD ---- */
+.auth-card {
+  width: min(420px, 100%); padding: 34px 30px 30px; text-align: center;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.auth-lock {
+  width: 58px; height: 58px; margin: 0 auto 6px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; color: #fff;
+  background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark));
+  box-shadow: 0 10px 24px rgba(47, 84, 235, 0.3);
+}
+.auth-title { font-family: var(--font-display); font-size: 1.35rem; color: var(--text-strong); }
+.auth-desc { font-size: 0.9rem; color: var(--text-muted); margin-bottom: 10px; }
+.auth-field__label { display: block; text-align: start; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.04em; color: var(--text-muted); margin-top: 4px; }
+
+.auth-input-wrap { position: relative; display: flex; align-items: center; }
+.auth-input-wrap input {
+  width: 100%; padding: 13px 48px 13px 16px; border-radius: var(--radius-md);
+  border: 1.5px solid rgba(47, 84, 235, 0.2); background: var(--glass-bg-strong);
+  color: var(--text-strong); font-size: 1rem; letter-spacing: 0.06em; outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.auth-input-wrap input::placeholder { letter-spacing: normal; color: var(--text-muted); }
+.auth-input-wrap input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 4px rgba(47, 84, 235, 0.14); }
+.auth-input-wrap input:disabled { opacity: 0.6; cursor: not-allowed; }
+.auth-toggle {
+  position: absolute; inset-inline-end: 8px; width: 34px; height: 34px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted); background: transparent; cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+.auth-toggle:hover { color: var(--color-primary-dark); background: rgba(47, 84, 235, 0.08); }
+.auth-toggle:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 1px; }
+.auth-toggle__slash { display: none; }
+.auth-toggle[aria-pressed="true"] .auth-toggle__slash { display: inline; }
+
+.auth-error {
+  margin-top: 4px; padding: 10px 14px; border-radius: var(--radius-sm); text-align: start;
+  font-size: 0.86rem; font-weight: 600; color: var(--danger); background: rgba(225, 29, 72, 0.08);
+}
+.auth-error.is-shaking { animation: auth-shake 0.4s ease; }
+.auth-submit { width: 100%; justify-content: center; margin-top: 8px; }
+.auth-submit:disabled { opacity: 0.65; cursor: not-allowed; transform: none; filter: none; }
+
+@keyframes auth-shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-6px); }
+  40%, 80% { transform: translateX(6px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.auth-locked .auth-gate, .auth-error.is-shaking { animation: none; }
+}
+
+/* ---- RTL ---- */
+[dir="rtl"] .auth-input-wrap input { padding: 13px 16px 13px 48px; }   /* eye button sits on the left in RTL */
+[dir="rtl"] .logout-btn svg { transform: scaleX(-1); }
