@@ -60,9 +60,10 @@ window.APP_CONFIG = {
   // "Admin passcode gate" section of SETUP.md before relying on it.
   //
   // Leave '' and admin.html stays locked ("not configured").
-  adminPasscodeHash: '',
+  adminPasscodeHash: 'pbkdf2-sha256$150000$949480b008f99cf0016d9228aefdb349$e12a6594876bcc637d1ad506276ae9bf9cbd3a5e01eaadbe1711de161934bbc4',
   // Lower-priority fallbacks, NOT recommended (plain text in a public file):
-  //adminPasscodeHash: 'pbkdf2-sha256$150000$949480b008f99cf0016d9228aefdb349$e12a6594876bcc637d1ad506276ae9bf9cbd3a5e01eaadbe1711de161934bbc4',
+  //   adminPasscode: '',   — then firebase.databaseSecret is tried last.
+
   // ---- Firebase Realtime Database ----------------------------------------
   // This is what makes Firebase the single source of truth:
   //   • student.js sends GET requests to  {databaseURL}/students.json
