@@ -897,7 +897,7 @@ body.auth-locked .auth-gate {
 .validation-report {
   margin-top: 10px; padding: 16px 20px; border-radius: var(--radius-md); text-align: start;
   background: rgba(225, 29, 72, 0.06); border: 1px solid rgba(225, 29, 72, 0.2);
-  animation: pop-in 0.35s var(--transition-slow);
+  animation: fade-up var(--transition-slow);
 }
 .validation-report__meta { margin: 0 0 10px; font-size: 0.82rem; font-weight: 600; color: var(--text-muted); }
 .validation-report__list { margin: 0; padding-inline-start: 22px; display: grid; gap: 9px; font-size: 0.9rem; line-height: 1.55; color: var(--text-strong); }
@@ -907,3 +907,49 @@ body.auth-locked .auth-gate {
 .validation-report__hint { margin: 12px 0 0; font-size: 0.82rem; color: var(--text-muted); }
 .validation-report__hint + .validation-report__hint { margin-top: 4px; }
 @media (prefers-reduced-motion: reduce) { .validation-report { animation: none; } }
+
+/* =======================================================================
+   25. Achievement badges (index.html) — injected under the profile card by
+   student.js. Uses the same tokens as the glass cards, so Dark Mode, RTL
+   and the PDF report all follow automatically.
+   ======================================================================= */
+.achievements { margin-top: 18px; }
+.achievements__title {
+  margin: 0 0 12px; font-family: var(--font-display); font-size: 0.8rem; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-muted);
+}
+.badge-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 12px; }
+
+.badge {
+  --badge-a: #fcd34d; --badge-b: #f59e0b; --badge-glow: rgba(245, 158, 11, 0.35);
+  position: relative; overflow: hidden;
+  flex: 1 1 240px; max-width: 380px;
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 18px; border-radius: var(--radius-md);
+  background: var(--glass-bg-strong); border: 1px solid var(--glass-border); box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  animation: pop-in var(--transition-slow) both;   /* delay per badge is set inline; "both" keeps it hidden until its turn */
+  transition: transform var(--transition-fast), box-shadow var(--transition-fast);
+}
+.badge::before {                                    /* accent edge: left in LTR, right in RTL */
+  content: ''; position: absolute; inset-block: 0; inset-inline-start: 0; width: 4px;
+  background: linear-gradient(180deg, var(--badge-a), var(--badge-b));
+}
+.badge:hover { transform: translateY(-3px); box-shadow: var(--glass-shadow-hover); }
+
+.badge--gold  { --badge-a: #fcd34d; --badge-b: #f59e0b; --badge-glow: rgba(245, 158, 11, 0.35); }
+.badge--blue  { --badge-a: var(--color-accent); --badge-b: var(--color-primary); --badge-glow: rgba(47, 84, 235, 0.3); }
+.badge--ember { --badge-a: #fb923c; --badge-b: #ef4444; --badge-glow: rgba(239, 68, 68, 0.3); }
+
+.badge__icon {
+  flex: 0 0 auto; width: 46px; height: 46px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; font-size: 1.4rem; line-height: 1;
+  background: linear-gradient(135deg, var(--badge-a), var(--badge-b));
+  box-shadow: 0 8px 18px var(--badge-glow);
+}
+.badge__body { min-width: 0; text-align: start; }
+.badge__title { display: block; font-family: var(--font-display); font-size: 0.98rem; font-weight: 700; color: var(--text-strong); }
+.badge__desc { display: block; margin-top: 2px; font-size: 0.8rem; line-height: 1.4; color: var(--text-muted); }
+
+@media (max-width: 520px) { .badge { flex-basis: 100%; max-width: none; } }
+@media (prefers-reduced-motion: reduce) { .badge { animation: none; transition: none; } .badge:hover { transform: none; } }

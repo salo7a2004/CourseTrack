@@ -561,8 +561,303 @@
     }
   }
 
+  /* =====================================================================
+     ACHIEVEMENT BADGES
+     ---------------------------------------------------------------------
+     evaluateBadges(studentData) -> the badges a student has earned (data)
+     renderBadges(studentData)   -> those badges as an HTML string (markup)
+     renderAchievements(...)     -> injects that markup into the results view
+
+       studentData = { columns, raw }
+         columns : the object detectColumns() returns (meetings / tasks / final)
+         raw     : the student's row, exactly as stored in Firebase
+
+     The three rules
+       🏆 Top Performer      final percentage / score  >= 90%
+       ⚡ 100% Attendance    no absence or negative mark in any recorded meeting
+       🔥 Consistent Learner every published task submitted AND passed
+
+     Design decisions (all adjustable in BADGE_RULES below)
+       • A BLANK cell means "not published yet" (that is exactly how the
+         timeline shows it), so it is never counted as an absence or a miss.
+         Badges are judged on what has been published so far.
+       • Badges must be EARNED on evidence. Doubt never awards one: an
+         unreadable score, a task grade nobody can interpret, or a course with
+         nothing published yet earns nothing.
+       • Matching is by whole words, in English and Arabic. The card colours
+         use a looser substring match (so "no" also matches "note"); a badge
+         never contradicts them — it is denied if EITHER method says negative.
+       • Only the final-SCORE column counts for Top Performer. Columns about
+         attendance, rank, status, notes or a raw "Total" (unknown maximum)
+         are never mistaken for it.
+     ===================================================================== */
+
+  const BADGE_RULES = {
+    topPerformerPercent: 90,  // final score at/above this percentage earns Top Performer
+    finalMaxScore: 100,       // a bare number in the final-score column is read as "out of this"
+    passPercent: 50,          // a task graded on a known scale (7/10, 70%, 0.7) must reach this to pass
+    taskMaxScore: null,       // set e.g. 10 if task grades are bare numbers out of that maximum;
+                              // null = a bare task number counts as submitted & passed when above 0
+    minRecordedMeetings: 1,   // published meetings needed before attendance can be judged
+    minRecordedTasks: 1,      // published tasks needed before consistency can be judged
+  };
+
+  const BADGE_VOCAB = {
+    positive: [
+      'present', 'attended', 'yes', 'pass', 'passed', 'passing', 'eligible', 'complete', 'completed', 'done',
+      'excellent', 'good', 'success', 'successful', 'successfully', 'submitted', 'delivered', 'accepted',
+      'approved', 'active', 'true', '✓', '✔', '☑', '✅',
+      'حاضر', 'حضر', 'نعم', 'ناجح', 'نجح', 'اجتاز', 'مكتمل', 'مكتملة', 'تم', 'تم التسليم', 'سلم', 'مقبول', 'ممتاز', 'جيد',
+    ],
+    negative: [
+      'absent', 'absence', 'no', 'not', 'fail', 'failed', 'failing', 'missing', 'missed', 'incomplete',
+      'inactive', 'ineligible', 'rejected', 'false', '✗', '✘', '✖', '❌',
+      'غائب', 'غايب', 'غياب', 'لا', 'لم', 'راسب', 'رسب', 'غير', 'ناقص', 'مرفوض',
+    ],
+  };
+
+  /** Lower-cases and folds the Arabic spellings that vary between typists
+   *  (diacritics, tatweel, أ/إ/آ, ى, ة) so one vocabulary entry matches all. */
+  function normalizeBadgeText(value) {
+    return String(value === undefined || value === null ? '' : value)
+      .toLowerCase()
+      .replace(/[\u064B-\u065F\u0670\u0640]/g, '')
+      .replace(/[\u0623\u0625\u0622]/g, '\u0627')
+      .replace(/\u0649/g, '\u064A')
+      .replace(/\u0629/g, '\u0647')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function escapeRegExp(text) {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  /** Words match only as whole words ("no" must not match "note" or "normal");
+   *  symbols such as ✓ simply match wherever they appear. */
+  function compileVocab(words) {
+    return words.map((word) => {
+      const normalized = normalizeBadgeText(word);
+      return /[\p{L}\p{N}]/u.test(normalized)
+        ? new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(normalized)}(?![\\p{L}\\p{N}])`, 'u')
+        : new RegExp(escapeRegExp(normalized), 'u');
+    });
+  }
+  const POSITIVE_PATTERNS = compileVocab(BADGE_VOCAB.positive);
+  const NEGATIVE_PATTERNS = compileVocab(BADGE_VOCAB.negative);
+
+  /** 'positive' | 'negative' | 'neutral' for a text mark. Negative wins. */
+  function classifyBadgeText(text) {
+    const normalized = normalizeBadgeText(text);
+    if (!normalized) return 'neutral';
+    if (classifyValue(text) === 'negative') return 'negative';            // same verdict as the card's red colour
+    if (NEGATIVE_PATTERNS.some((pattern) => pattern.test(normalized))) return 'negative';
+    if (POSITIVE_PATTERNS.some((pattern) => pattern.test(normalized))) return 'positive';
+    return 'neutral';
+  }
+
+  /** Reads a mark as a number, in whichever form Excel/typists produced it:
+   *  92 · "92" · "92.5" · "92,5" · "1,000" · "92%" · "46/50" · "46 out of 50"
+   *  · "٩٢" (Arabic-Indic digits) · "٩٢٪" · "٤٦ من ٥٠".
+   *  Returns { percent } when the value carries its own scale (%, x/y),
+   *  { bare } for a plain number, or null when it is not numeric at all. */
+  function parseMark(raw) {
+    if (typeof raw === 'number') return Number.isFinite(raw) ? { bare: raw } : null;
+    let text = String(raw === undefined || raw === null ? '' : raw)
+      .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+      .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06F0))
+      .replace(/\u066B/g, '.')
+      .replace(/\u066C/g, ',')
+      .replace(/\u066A/g, '%')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!text) return null;
+
+    const part = '(-?\\d{1,3}(?:,\\d{3})+(?:\\.\\d+)?|-?\\d+(?:[.,]\\d+)?)';
+    const toNumber = (piece) => (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(piece) ? Number(piece.replace(/,/g, '')) : Number(piece.replace(',', '.')));
+
+    let match = text.match(new RegExp(`^${part}\\s*%$`));
+    if (match) return { percent: toNumber(match[1]) };
+    match = text.match(new RegExp(`^${part}\\s*(?:/|out of|من)\\s*${part}$`, 'i'));
+    if (match) {
+      const denominator = toNumber(match[2]);
+      return denominator > 0 ? { percent: (toNumber(match[1]) / denominator) * 100 } : null;
+    }
+    match = text.match(new RegExp(`^${part}$`));
+    return match ? { bare: toNumber(match[1]) } : null;
+  }
+
+  /** A mark as a percentage, or null when it can't be read with confidence.
+   *  A bare number <= 1 is a fraction (Excel stores 92% as 0.92); a bare number
+   *  above 1 is read as "out of maxScore"; anything bigger is unreadable. */
+  function toPercent(raw, maxScore) {
+    const mark = parseMark(raw);
+    if (!mark) return null;
+    let percent;
+    if (mark.percent !== undefined) percent = mark.percent;
+    else if (mark.bare >= 0 && mark.bare <= 1) percent = mark.bare * 100;
+    else if (mark.bare > 1 && mark.bare <= maxScore) percent = (mark.bare / maxScore) * 100;
+    else return null;
+    return Number.isFinite(percent) && percent >= 0 ? Math.round(percent * 1e6) / 1e6 : null;
+  }
+
+  function formatPercent(percent) {
+    return String(Math.round(percent * 10) / 10);
+  }
+
+  /* ---- 🏆 Top Performer: find the "final score" column ---- */
+  const FINAL_SCORE_EXCLUDE = /attend|حضور|absen|غياب|rank|ترتيب|position|status|حاله|e-?mail|note|ملاحظ|comment|تعليق|date|تاريخ|total|مجموع/;
+  const FINAL_SCORE_TIERS = [
+    /final|نهائ|overall|اجمال/,                     // "Final Score", "Overall %", "الدرجة النهائية", "النسبة النهائية"
+    /percent|%|نسبه|score|grade|mark|درجه/,         // any other score-like column
+  ];
+
+  /** The student's final score as a percentage: { header, percent } or null.
+   *  Earlier tiers win; within a tier the first readable column wins. */
+  function findFinalScore(columns, raw) {
+    for (let t = 0; t < FINAL_SCORE_TIERS.length; t += 1) {
+      for (let i = 0; i < columns.final.length; i += 1) {
+        const header = columns.final[i];
+        const label = normalizeBadgeText(header);
+        if (FINAL_SCORE_EXCLUDE.test(label) || !FINAL_SCORE_TIERS[t].test(label)) continue;
+        const percent = toPercent(raw[header], BADGE_RULES.finalMaxScore);
+        if (percent !== null) return { header, percent };
+      }
+    }
+    return null;
+  }
+
+  /* ---- ⚡ 100% Attendance ---- */
+
+  /** True when a meeting mark records an absence: a negative word, FALSE, or a 0 / negative number. */
+  function isAbsence(value) {
+    if (value === false) return true;
+    const mark = parseMark(value);
+    if (mark) return (mark.percent !== undefined ? mark.percent : mark.bare) <= 0;
+    return classifyBadgeText(value) === 'negative';
+  }
+
+  function evaluateAttendance(columns, raw) {
+    let recorded = 0;
+    let absences = 0;
+    columns.meetings.forEach(({ key }) => {
+      if (isEmptyCell(raw[key]) || typeof raw[key] === 'object') return;   // not published yet (or corrupt) — not an absence
+      recorded += 1;
+      if (isAbsence(raw[key])) absences += 1;
+    });
+    return { recorded, absences };
+  }
+
+  /* ---- 🔥 Consistent Learner ---- */
+
+  /** 'passed' | 'failed' | 'unknown' for one published task mark. */
+  function judgeTask(value) {
+    if (value === true) return 'passed';
+    if (value === false) return 'failed';
+    const mark = parseMark(value);
+    if (mark) {
+      if (mark.percent !== undefined) return mark.percent >= BADGE_RULES.passPercent ? 'passed' : 'failed';
+      if (mark.bare <= 0) return 'failed';
+      if (mark.bare <= 1) return mark.bare * 100 >= BADGE_RULES.passPercent ? 'passed' : 'failed';
+      if (BADGE_RULES.taskMaxScore) return (mark.bare / BADGE_RULES.taskMaxScore) * 100 >= BADGE_RULES.passPercent ? 'passed' : 'failed';
+      return 'passed';                     // a bare grade above 0: submitted, and the scale is unknown
+    }
+    const verdict = classifyBadgeText(value);
+    if (verdict === 'negative') return 'failed';
+    return verdict === 'positive' ? 'passed' : 'unknown';   // unreadable text is NOT evidence of a pass
+  }
+
+  function evaluateTasks(columns, raw) {
+    let recorded = 0;
+    let passed = 0;
+    columns.tasks.forEach(({ key }) => {
+      if (isEmptyCell(raw[key]) || typeof raw[key] === 'object') return;   // not published yet (or corrupt)
+      recorded += 1;
+      if (judgeTask(raw[key]) === 'passed') passed += 1;
+    });
+    return { recorded, passed };
+  }
+
+  /** The badges this student has earned, in display order. Pure: no DOM. */
+  function evaluateBadges(studentData) {
+    const columns = studentData && studentData.columns;
+    const raw = studentData && studentData.raw;
+    if (!columns || !raw) return [];
+
+    const earned = [];
+
+    const score = findFinalScore(columns, raw);
+    if (score && score.percent >= BADGE_RULES.topPerformerPercent) {
+      earned.push({ id: 'top-performer', icon: '🏆', tone: 'gold', titleKey: 'badge.top.title', descKey: 'badge.top.desc', descVars: { score: formatPercent(score.percent) } });
+    }
+
+    const attendance = evaluateAttendance(columns, raw);
+    if (attendance.recorded >= BADGE_RULES.minRecordedMeetings && attendance.absences === 0) {
+      earned.push({ id: 'full-attendance', icon: '⚡', tone: 'blue', titleKey: 'badge.attendance.title', descKey: 'badge.attendance.desc', descVars: { n: attendance.recorded } });
+    }
+
+    const tasks = evaluateTasks(columns, raw);
+    if (tasks.recorded >= BADGE_RULES.minRecordedTasks && tasks.passed === tasks.recorded) {
+      earned.push({ id: 'consistent-learner', icon: '🔥', tone: 'ember', titleKey: 'badge.consistent.title', descKey: 'badge.consistent.desc', descVars: { n: tasks.recorded } });
+    }
+
+    return earned;
+  }
+
+  /** The earned badges as HTML (heading + list), or '' when none are earned.
+   *  Text is already translated AND carries data-i18n keys, so a language
+   *  switch re-translates it live. Every dynamic value is escaped. */
+  function renderBadges(studentData) {
+    const earned = evaluateBadges(studentData);
+    if (!earned.length) return '';
+
+    const items = earned.map((badge, index) => {
+      // escapeHtml() leaves quotes alone (fine for text, wrong inside an attribute), so they are escaped here
+      const vars = badge.descVars ? ` data-i18n-vars="${escapeHtml(JSON.stringify(badge.descVars)).replace(/"/g, '&quot;')}"` : '';
+      return `<li class="badge badge--${badge.tone}" data-badge="${badge.id}" style="animation-delay:${index * 90}ms">
+        <span class="badge__icon" aria-hidden="true">${badge.icon}</span>
+        <span class="badge__body">
+          <strong class="badge__title" data-i18n="${badge.titleKey}">${escapeHtml(I18N.t(badge.titleKey))}</strong>
+          <span class="badge__desc" data-i18n="${badge.descKey}"${vars}>${escapeHtml(I18N.t(badge.descKey, badge.descVars))}</span>
+        </span>
+      </li>`;
+    }).join('');
+
+    return `<h4 class="achievements__title" data-i18n="badge.heading">${escapeHtml(I18N.t('badge.heading'))}</h4>`
+      + `<ul class="badge-list" role="list">${items}</ul>`;
+  }
+
+  let achievementsEl = null; // created on first use, directly under the profile card
+
+  function getAchievementsEl() {
+    if (!achievementsEl) {
+      achievementsEl = document.createElement('div');
+      achievementsEl.id = 'achievements';
+      achievementsEl.className = 'achievements';
+      achievementsEl.hidden = true;
+      const anchor = dom.studentName.closest('.profile-card') || dom.studentName.parentElement;
+      anchor.insertAdjacentElement('afterend', achievementsEl);
+    }
+    return achievementsEl;
+  }
+
+  /** Injects the badges into the results. A failure here can never stop the
+   *  results from showing: it is logged and the badge area stays hidden. */
+  function renderAchievements(columns, student) {
+    try {
+      const el = getAchievementsEl();
+      const html = renderBadges({ columns, raw: student.raw });
+      el.innerHTML = html;
+      el.hidden = !html;
+    } catch (err) {
+      console.error('CourseTrack — achievement badges failed (results are unaffected):', err);
+      if (achievementsEl) { achievementsEl.innerHTML = ''; achievementsEl.hidden = true; }
+    }
+  }
+
   function renderStudent(columns, student) {
     renderProfile(columns, student);
+    renderAchievements(columns, student);
     renderTimeline(columns, student);
     renderFinalResults(columns, student);
     setViewState({ results: true });

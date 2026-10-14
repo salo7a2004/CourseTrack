@@ -189,6 +189,15 @@
       'val.moreIssues': '…and {n} more problem(s). Open the browser console (F12) for the full list.',
       'val.hint': 'Fix these rows in Excel, then upload the file again. Row numbers match the row numbers shown in Excel.',
       'val.hintCase': 'Codes are compared ignoring capital letters and extra spaces, exactly like the Student Portal search.',
+
+      /* ---- achievement badges ---- */
+      'badge.heading': 'Achievements',
+      'badge.top.title': 'Top Performer',
+      'badge.top.desc': 'Final score of {score}% (90% or higher)',
+      'badge.attendance.title': '100% Attendance',
+      'badge.attendance.desc': 'No absences across {n} recorded meeting(s)',
+      'badge.consistent.title': 'Consistent Learner',
+      'badge.consistent.desc': 'All {n} published task(s) submitted and passed',
     },
 
     ar: {
@@ -332,6 +341,15 @@
       'val.moreIssues': '…و{n} مشكلة أخرى. افتح وحدة تحكم المتصفح (F12) لعرض القائمة الكاملة.',
       'val.hint': 'صحّح هذه الصفوف في Excel ثم ارفع الملف مرة أخرى. أرقام الصفوف تطابق أرقام الصفوف الظاهرة في Excel.',
       'val.hintCase': 'تتم مقارنة الأكواد بغض النظر عن حالة الأحرف والمسافات الزائدة، تمامًا مثل بحث بوابة الطالب.',
+
+      /* ---- achievement badges ---- */
+      'badge.heading': 'الإنجازات',
+      'badge.top.title': 'المتفوّق',
+      'badge.top.desc': 'درجة نهائية {score}% (90% أو أعلى)',
+      'badge.attendance.title': 'حضور 100%',
+      'badge.attendance.desc': 'لا غياب في {n} من الاجتماعات المسجّلة',
+      'badge.consistent.title': 'متعلّم مثابر',
+      'badge.consistent.desc': 'تم تسليم جميع المهام المنشورة ({n}) واجتيازها',
     },
   };
 
