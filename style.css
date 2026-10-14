@@ -889,3 +889,21 @@ body.auth-locked .auth-gate {
 /* ---- RTL ---- */
 [dir="rtl"] .auth-input-wrap input { padding: 13px 16px 13px 48px; }   /* eye button sits on the left in RTL */
 [dir="rtl"] .logout-btn svg { transform: scaleX(-1); }
+
+/* =======================================================================
+   24. Upload validation report (admin.html) — sits directly under the error
+   banner when a file is blocked before it reaches the database.
+   ======================================================================= */
+.validation-report {
+  margin-top: 10px; padding: 16px 20px; border-radius: var(--radius-md); text-align: start;
+  background: rgba(225, 29, 72, 0.06); border: 1px solid rgba(225, 29, 72, 0.2);
+  animation: pop-in 0.35s var(--transition-slow);
+}
+.validation-report__meta { margin: 0 0 10px; font-size: 0.82rem; font-weight: 600; color: var(--text-muted); }
+.validation-report__list { margin: 0; padding-inline-start: 22px; display: grid; gap: 9px; font-size: 0.9rem; line-height: 1.55; color: var(--text-strong); }
+.validation-report__list li::marker { color: var(--danger); }
+.validation-issue bdi { font-weight: 700; padding: 1px 6px; border-radius: 6px; background: rgba(225, 29, 72, 0.1); }
+.validation-issue--more { color: var(--text-muted); list-style: none; margin-inline-start: -22px; }
+.validation-report__hint { margin: 12px 0 0; font-size: 0.82rem; color: var(--text-muted); }
+.validation-report__hint + .validation-report__hint { margin-top: 4px; }
+@media (prefers-reduced-motion: reduce) { .validation-report { animation: none; } }

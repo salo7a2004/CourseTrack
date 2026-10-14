@@ -176,6 +176,19 @@
       'auth.badConfig': 'The admin passcode setting in config.js is malformed. Generate a new one with make-admin-passcode.html.',
       'auth.insecureContext': 'This page must be opened over HTTPS (or from localhost) so the passcode can be verified securely.',
       'auth.signOut': 'Sign out',
+
+      /* ---- upload validation report ---- */
+      'val.title': 'Upload blocked — {count} problem(s) found in the file. Nothing was sent to the database.',
+      'val.sheetInfo': 'Checked sheet "{sheet}" (header row: {headerRow}).',
+      'val.missingCodeHeader': 'No Code column found. The header row must contain a column whose title includes "code".',
+      'val.missingNameHeader': 'No Name column found. The header row must contain a column whose title includes "name" (or "اسم").',
+      'val.missingCode': 'Empty student Code — row(s): {rows}. Students without a code cannot be looked up.',
+      'val.missingName': 'Empty student Name — row(s): {rows}.',
+      'val.duplicate': 'Duplicate Code <bdi dir="ltr">{code}</bdi> — rows: {rows}. Every student needs a unique code.',
+      'val.keyCollision': 'Codes <bdi dir="ltr">{codes}</bdi> (rows: {rows}) would be stored under the same database key (the characters . # $ [ ] / are replaced) and overwrite each other. Make them distinct.',
+      'val.moreIssues': '…and {n} more problem(s). Open the browser console (F12) for the full list.',
+      'val.hint': 'Fix these rows in Excel, then upload the file again. Row numbers match the row numbers shown in Excel.',
+      'val.hintCase': 'Codes are compared ignoring capital letters and extra spaces, exactly like the Student Portal search.',
     },
 
     ar: {
@@ -306,6 +319,19 @@
       'auth.badConfig': 'إعداد رمز مرور المسؤول في ملف config.js غير صالح. أنشئ إعدادًا جديدًا باستخدام make-admin-passcode.html.',
       'auth.insecureContext': 'يجب فتح هذه الصفحة عبر HTTPS (أو من localhost) حتى يمكن التحقق من رمز المرور بشكل آمن.',
       'auth.signOut': 'تسجيل الخروج',
+
+      /* ---- upload validation report ---- */
+      'val.title': 'تم إيقاف الرفع — تم العثور على {count} مشكلة في الملف. لم يتم إرسال أي شيء إلى قاعدة البيانات.',
+      'val.sheetInfo': 'تم فحص ورقة العمل "{sheet}" (صف العناوين: {headerRow}).',
+      'val.missingCodeHeader': 'لم يتم العثور على عمود الكود. يجب أن يحتوي صف العناوين على عمود يتضمن عنوانه كلمة "code".',
+      'val.missingNameHeader': 'لم يتم العثور على عمود الاسم. يجب أن يحتوي صف العناوين على عمود يتضمن عنوانه كلمة "name" أو "اسم".',
+      'val.missingCode': 'كود الطالب فارغ — في الصف/الصفوف: {rows}. لا يمكن البحث عن الطلاب بدون كود.',
+      'val.missingName': 'اسم الطالب فارغ — في الصف/الصفوف: {rows}.',
+      'val.duplicate': 'كود مكرر <bdi dir="ltr">{code}</bdi> — في الصفوف: {rows}. يجب أن يكون لكل طالب كود فريد.',
+      'val.keyCollision': 'الأكواد <bdi dir="ltr">{codes}</bdi> (الصفوف: {rows}) ستُحفظ تحت نفس مفتاح قاعدة البيانات (يتم استبدال الرموز . # $ [ ] /) وسيمحو بعضها بعضًا. اجعلها مختلفة.',
+      'val.moreIssues': '…و{n} مشكلة أخرى. افتح وحدة تحكم المتصفح (F12) لعرض القائمة الكاملة.',
+      'val.hint': 'صحّح هذه الصفوف في Excel ثم ارفع الملف مرة أخرى. أرقام الصفوف تطابق أرقام الصفوف الظاهرة في Excel.',
+      'val.hintCase': 'تتم مقارنة الأكواد بغض النظر عن حالة الأحرف والمسافات الزائدة، تمامًا مثل بحث بوابة الطالب.',
     },
   };
 

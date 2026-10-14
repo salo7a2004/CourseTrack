@@ -182,6 +182,12 @@
   // bounded so a sheet with no header at all fails fast.
   const MAX_HEADER_SCAN_ROWS = 25;
 
+  // Mirrors IDENTITY_FIELDS.name in student.js, so "has a Name column" means
+  // exactly what it means to the Student Portal that will display the data.
+  const NAME_HEADER_PATTERN = /name|اسم/i;
+  const MAX_LISTED_ROWS = 12;      // row numbers quoted per problem in the report
+  const MAX_LISTED_ISSUES = 20;    // problems listed in the report (all are in the console log)
+
   /**
    * Scans a single sheet's leading rows for the one that is actually a
    * header row — identified by containing a cell whose text matches
@@ -192,7 +198,12 @@
    * rows above the real table, from 0 (data starts at row 1) upward.
    */
   function findHeaderRow(sheet) {
-    const grid = XLSX.utils.sheet_to_json(sheet, { header: 1, range: 0, blankrows: false });
+    // NOTE: these options (range: 0, blankrows: true) are IDENTICAL to the ones
+    // parseExcelFile() uses to read the data. Both calls therefore produce the
+    // same grid, so `rowIndex` points at the same row in both — and, because
+    // `range: 0` starts at the sheet's first row, grid index N is Excel row N+1.
+    // That is what lets the validation report quote exact Excel row numbers.
+    const grid = XLSX.utils.sheet_to_json(sheet, { header: 1, range: 0, blankrows: true });
     const limit = Math.min(grid.length, MAX_HEADER_SCAN_ROWS);
     for (let i = 0; i < limit; i++) {
       const row = grid[i] || [];
@@ -271,7 +282,7 @@
 
         try {
           const { sheetName, headerRowIndex } = pickSheet(workbook);
-          const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '', header: 1 });
+          const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '', header: 1, range: 0, blankrows: true });
           if (!rows.length) { reject(I18N.error('err.sheetEmpty', { sheet: sheetName })); return; }
 
           // Header row is wherever pickSheet actually found it — not
@@ -297,13 +308,152 @@
             return;
           }
 
-          resolve({ sheetName, headers, rows: dataRows });
+          resolve({ sheetName, headers, rows: dataRows, headerRowIndex });
         } catch (err) {
           reject(err instanceof Error ? err : I18N.error(ERRORS.INVALID_EXCEL));
         }
       };
       reader.readAsArrayBuffer(file);
     });
+  }
+
+  /* =====================================================================
+     DATA VALIDATION — runs after parsing and BEFORE anything is sent
+     ---------------------------------------------------------------------
+     validateStudentData() is a pure function (no DOM, no network) that
+     returns a structured result. handleFile() turns a failed result into a
+     blocking error banner + report, and pushToFirebase() re-checks as a last
+     line of defence, so no code path can reach the Firebase PUT with data
+     that failed these rules:
+
+       1. mandatory headers — a Code column and a Name column
+       2. duplicate Student Codes
+       3. rows with an empty Code or an empty Name
+
+     The matching rules deliberately mirror the Student Portal (student.js):
+       • the Name column is the first header matching /name|اسم/i;
+       • codes are compared trimmed and case-insensitively, because that is
+         how a student's search is matched — and the FIRST match wins — so
+         "SD-1" and "sd-1" are one student, not two;
+       • two different codes that Firebase would store under the SAME key
+         (sanitizeFirebaseKey turns . # $ [ ] / into "_") would silently
+         overwrite each other, so that is reported as well.
+     Fully blank rows (spacers, trailing formatted rows) are ignored.
+     ===================================================================== */
+
+  /** Cell -> trimmed text. Also ignores zero-width characters that Excel
+   *  exports and copy-paste sometimes leave behind: they look empty but
+   *  aren't, and would otherwise slip through as a "code". */
+  function cellText(value) {
+    return String(value === undefined || value === null ? '' : value)
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .trim();
+  }
+
+  function formatRowList(rowNumbers) {
+    const shown = rowNumbers.slice(0, MAX_LISTED_ROWS).join(', ');
+    return rowNumbers.length > MAX_LISTED_ROWS ? `${shown} … (+${rowNumbers.length - MAX_LISTED_ROWS})` : shown;
+  }
+
+  /**
+   * @param {{headers: string[], rows: any[][], headerRowIndex?: number, sheetName?: string}} data
+   *        `rows` are the data rows below the header; rows[0] is Excel row headerRowIndex + 2.
+   * @returns {{ok: boolean, issues: object[], ...}}  every problem found, not just the first.
+   *   issue types: missingHeader {column} · missingCode {rows} · missingName {rows}
+   *                · duplicateCode {code, rows} · keyCollision {key, codes, rows}
+   */
+  function validateStudentData({ headers, rows, headerRowIndex = 0, sheetName = '' }) {
+    const issues = [];
+    const codeCol = headers.findIndex((h) => /code/i.test(String(h).trim()));
+    const nameCol = headers.findIndex((h, c) => c !== codeCol && NAME_HEADER_PATTERN.test(String(h).trim()));
+
+    // 1. mandatory headers — all missing ones are reported together
+    if (codeCol === -1) issues.push({ type: 'missingHeader', column: 'code' });
+    if (nameCol === -1) issues.push({ type: 'missingHeader', column: 'name' });
+
+    // 2 + 3. row checks (each runs for whichever of the two columns exists)
+    const firstDataRowNumber = headerRowIndex + 2; // the header itself is Excel row headerRowIndex + 1
+    const missingCode = [];
+    const missingName = [];
+    const byCode = new Map();      // lower-cased code -> { spellings: Set, rows: [] }
+    const keyToCodes = new Map();  // Firebase key     -> Set of lower-cased codes
+    let blankRows = 0;
+
+    rows.forEach((row, i) => {
+      const rowNumber = firstDataRowNumber + i;
+      if (row.every((cell) => cellText(cell) === '')) { blankRows += 1; return; }
+
+      if (codeCol !== -1) {
+        const code = cellText(row[codeCol]);
+        if (!code) {
+          missingCode.push(rowNumber);
+        } else {
+          const normalized = code.toLowerCase();
+          if (!byCode.has(normalized)) byCode.set(normalized, { spellings: new Set(), rows: [] });
+          const group = byCode.get(normalized);
+          group.spellings.add(code);
+          group.rows.push(rowNumber);
+
+          const key = sanitizeFirebaseKey(code);
+          if (!keyToCodes.has(key)) keyToCodes.set(key, new Set());
+          keyToCodes.get(key).add(normalized);
+        }
+      }
+      if (nameCol !== -1 && cellText(row[nameCol]) === '') missingName.push(rowNumber);
+    });
+
+    if (missingCode.length) issues.push({ type: 'missingCode', rows: missingCode });
+    if (missingName.length) issues.push({ type: 'missingName', rows: missingName });
+
+    Array.from(byCode.values())
+      .filter((group) => group.rows.length > 1)
+      .sort((x, y) => x.rows[0] - y.rows[0])
+      .forEach((group) => issues.push({ type: 'duplicateCode', code: Array.from(group.spellings).join(' / '), rows: group.rows }));
+
+    keyToCodes.forEach((codes, key) => {
+      if (codes.size < 2) return; // one code under one key is fine (a duplicate is reported above)
+      const groups = Array.from(codes).map((c) => byCode.get(c));
+      issues.push({
+        type: 'keyCollision',
+        key,
+        codes: groups.map((g) => Array.from(g.spellings)[0]).join(' / '),
+        rows: groups.reduce((all, g) => all.concat(g.rows), []).sort((x, y) => x - y),
+      });
+    });
+
+    return {
+      ok: issues.length === 0,
+      issues,
+      sheetName,
+      headerRow: headerRowIndex + 1,
+      codeColumn: codeCol === -1 ? null : headers[codeCol],
+      nameColumn: nameCol === -1 ? null : headers[nameCol],
+      totalRows: rows.length,
+      studentRows: rows.length - blankRows,
+      blankRows,
+    };
+  }
+
+  /** A failed validation as a keyed Error, so it flows through the existing
+   *  catch -> showErrorBanner() path; the structured result rides along. */
+  function validationError(result) {
+    const err = I18N.error('val.title', { count: result.issues.length });
+    err.validation = result;
+    return err;
+  }
+
+  /** Structured log for the browser console (F12) — the full list, however long. */
+  function logValidationFailure(file, result) {
+    console.groupCollapsed(`CourseTrack Admin — upload BLOCKED: ${result.issues.length} validation problem(s) in "${file.name}"`);
+    console.log('Sheet:', result.sheetName, '| header row:', result.headerRow, '| Code column:', result.codeColumn, '| Name column:', result.nameColumn);
+    console.log('Rows read:', result.totalRows, '| student rows:', result.studentRows, '| blank rows ignored:', result.blankRows);
+    console.table(result.issues.map((issue) => ({
+      problem: issue.type,
+      detail: issue.column || issue.code || issue.codes || '',
+      excelRows: issue.rows ? issue.rows.join(', ') : '',
+    })));
+    console.log('Full structured result:', result);
+    console.groupEnd();
   }
 
   /* Lightweight column counters — just for the Statistics tiles, not
@@ -422,7 +572,13 @@
    * cleanly overwrites their one record instead of ever appending a
    * duplicate.
    */
-  async function pushToFirebase(headers, rows) {
+  async function pushToFirebase(headers, rows, headerRowIndex) {
+    // LAST LINE OF DEFENCE. handleFile() has already validated and shown the
+    // report; this makes it impossible for ANY caller to reach the PUT below
+    // with data that failed validation.
+    const validation = validateStudentData({ headers, rows, headerRowIndex });
+    if (!validation.ok) throw validationError(validation);
+
     const { studentsUrl, metaUrl } = getFirebaseUrls();
 
     const codeColIndex = headers.findIndex((h) => /code/i.test(String(h).trim()));
@@ -430,8 +586,8 @@
 
     const payload = {};
     rows.forEach((row) => {
-      const code = String(row[codeColIndex] || '').trim();
-      if (!code) return; // parseExcelFile already guarantees the sheet has a Code column; an individual row can still be blank
+      const code = cellText(row[codeColIndex]); // same reading as the validator (the old `|| ''` also dropped a numeric 0)
+      if (!code) return; // only fully blank spacer rows get here: validateStudentData has blocked every other row without a Code
       const rowObject = {};
       headers.forEach((header, c) => { rowObject[header] = row[c]; });
       payload[sanitizeFirebaseKey(code)] = rowObject;
@@ -479,9 +635,12 @@
     return date.toLocaleString(I18N.locale(), { dateStyle: 'medium', timeStyle: 'short' });
   }
 
+  let validationReportEl = null; // created on first use, directly under #upload-error
+
   function resetBanners() {
     dom.uploadSuccess.hidden = true;
     dom.uploadError.hidden = true;
+    hideValidationReport();
   }
 
   function showSuccessBanner() {
@@ -497,6 +656,88 @@
     resetBanners();
     I18N.setErrorText(dom.uploadErrorText, errOrKey, 'err.invalidExcel');
     dom.uploadError.hidden = false;
+    // A validation failure carries its structured result: list every problem.
+    if (errOrKey && errOrKey.validation) renderValidationReport(errOrKey.validation);
+  }
+
+  function getValidationReport() {
+    if (!validationReportEl) {
+      validationReportEl = document.createElement('div');
+      validationReportEl.id = 'validation-report';
+      validationReportEl.className = 'validation-report';
+      validationReportEl.hidden = true;
+      dom.uploadError.insertAdjacentElement('afterend', validationReportEl);
+    }
+    return validationReportEl;
+  }
+
+  function hideValidationReport() {
+    if (!validationReportEl) return;
+    validationReportEl.hidden = true;
+    validationReportEl.textContent = '';
+  }
+
+  /** Like I18N.setText, but for dictionary entries that contain markup
+   *  (<bdi> around codes). Values are HTML-escaped by I18N.apply, and the key
+   *  is stored on the element so the line re-translates on a language switch. */
+  function setHtmlText(el, key, vars) {
+    el.setAttribute('data-i18n-html', key);
+    if (vars) el.setAttribute('data-i18n-vars', JSON.stringify(vars));
+    I18N.apply(el);
+  }
+
+  function describeIssue(issue) {
+    switch (issue.type) {
+      case 'missingHeader': return { key: issue.column === 'code' ? 'val.missingCodeHeader' : 'val.missingNameHeader' };
+      case 'missingCode': return { key: 'val.missingCode', vars: { rows: formatRowList(issue.rows) } };
+      case 'missingName': return { key: 'val.missingName', vars: { rows: formatRowList(issue.rows) } };
+      case 'duplicateCode': return { key: 'val.duplicate', vars: { code: issue.code, rows: formatRowList(issue.rows) } };
+      case 'keyCollision': return { key: 'val.keyCollision', vars: { codes: issue.codes, rows: formatRowList(issue.rows) } };
+      default: return { key: 'val.hint' };
+    }
+  }
+
+  function renderValidationReport(result) {
+    const report = getValidationReport();
+    report.textContent = '';
+
+    if (result.sheetName) {
+      const meta = document.createElement('p');
+      meta.className = 'validation-report__meta';
+      I18N.setText(meta, 'val.sheetInfo', { sheet: result.sheetName, headerRow: result.headerRow });
+      report.appendChild(meta);
+    }
+
+    const list = document.createElement('ul');
+    list.className = 'validation-report__list';
+    result.issues.slice(0, MAX_LISTED_ISSUES).forEach((issue) => {
+      const item = document.createElement('li');
+      item.className = `validation-issue validation-issue--${issue.type}`;
+      const { key, vars } = describeIssue(issue);
+      setHtmlText(item, key, vars);
+      list.appendChild(item);
+    });
+    if (result.issues.length > MAX_LISTED_ISSUES) {
+      const more = document.createElement('li');
+      more.className = 'validation-issue validation-issue--more';
+      setHtmlText(more, 'val.moreIssues', { n: result.issues.length - MAX_LISTED_ISSUES });
+      list.appendChild(more);
+    }
+    report.appendChild(list);
+
+    const hint = document.createElement('p');
+    hint.className = 'validation-report__hint';
+    I18N.setText(hint, 'val.hint');
+    report.appendChild(hint);
+    if (result.issues.some((issue) => issue.type === 'duplicateCode')) {
+      const caseHint = document.createElement('p');
+      caseHint.className = 'validation-report__hint';
+      I18N.setText(caseHint, 'val.hintCase');
+      report.appendChild(caseHint);
+    }
+
+    report.hidden = false;
+    try { report.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (err) { /* cosmetic only */ }
   }
 
   /** Walks the visible step list one at a time so the admin can see
@@ -574,14 +815,24 @@
     try {
       await wait(150);
       markStepsUpTo('read');
-      const { headers, rows } = await parseExcelFile(file);
+      const { headers, rows, headerRowIndex, sheetName } = await parseExcelFile(file);
 
       markStepsUpTo('process');
       await wait(150);
+
+      // VALIDATION GATE — before the Statistics tiles are touched (they must
+      // keep describing what is actually in the database) and long before any
+      // fetch. On failure this throws; nothing below it runs, so no PUT is sent.
+      const validation = validateStudentData({ headers, rows, headerRowIndex, sheetName });
+      if (!validation.ok) {
+        logValidationFailure(file, validation);
+        throw validationError(validation);
+      }
+
       updateStatsDisplay({ fileName: file.name, headers, students: rows.length, status: 'status.processing' });
 
       markStepsUpTo('sync');
-      const result = await pushToFirebase(headers, rows);
+      const result = await pushToFirebase(headers, rows, headerRowIndex);
 
       markStepsUpTo('done');
       setStep('done', 'done');
