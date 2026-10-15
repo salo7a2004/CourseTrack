@@ -193,7 +193,7 @@
       /* ---- achievement badges ---- */
       'badge.heading': 'Achievements',
       'badge.top.title': 'Top Performer',
-      'badge.top.desc': 'Final score of {score}% (90% or higher)',
+      'badge.top.desc': 'Score {score} — at or above the average ({average}) of {n} active student(s)',
       'badge.attendance.title': '100% Attendance',
       'badge.attendance.desc': 'No absences across {n} recorded meeting(s)',
       'badge.consistent.title': 'Consistent Learner',
@@ -345,7 +345,7 @@
       /* ---- achievement badges ---- */
       'badge.heading': 'الإنجازات',
       'badge.top.title': 'المتفوّق',
-      'badge.top.desc': 'درجة نهائية {score}% (90% أو أعلى)',
+      'badge.top.desc': 'الدرجة {score} — تساوي متوسط {n} من الطلاب النشطين ({average}) أو تزيد عليه',
       'badge.attendance.title': 'حضور 100%',
       'badge.attendance.desc': 'لا غياب في {n} من الاجتماعات المسجّلة',
       'badge.consistent.title': 'متعلّم مثابر',

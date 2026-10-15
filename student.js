@@ -568,12 +568,14 @@
      renderBadges(studentData)   -> those badges as an HTML string (markup)
      renderAchievements(...)     -> injects that markup into the results view
 
-       studentData = { columns, raw }
+       studentData = { columns, raw, cohort }
          columns : the object detectColumns() returns (meetings / tasks / final)
          raw     : the student's row, exactly as stored in Firebase
+         cohort  : every student's row (what the search just fetched) — the
+                   pool Top Performer is measured against
 
      The three rules
-       🏆 Top Performer      final percentage / score  >= 90%
+       🏆 Top Performer      final score at or above the average of the ACTIVE submitters
        ⚡ 100% Attendance    no absence or negative mark in any recorded meeting
        🔥 Consistent Learner every published task submitted AND passed
 
@@ -587,14 +589,30 @@
        • Matching is by whole words, in English and Arabic. The card colours
          use a looser substring match (so "no" also matches "note"); a badge
          never contradicts them — it is denied if EITHER method says negative.
-       • Only the final-SCORE column counts for Top Performer. Columns about
-         attendance, rank, status, notes or a raw "Total" (unknown maximum)
-         are never mistaken for it.
+       • Top Performer is RELATIVE, not a fixed percentage. The benchmark is
+         the average of the ACTIVE submitters only — students who actually
+         have a valid numeric grade in the final-score column. Blank cells,
+         "N/A", "Absent", "Not submitted" and zeros are left out, so a course
+         where 40 of 100 students submitted is measured against those 40. A
+         student qualifies at or above that average (BADGE_RULES can raise
+         the bar, e.g. average + 0.5 standard deviations). Being relative, it
+         never has to assume a maximum score: 10/10, 45/50 and 92/100 all
+         work, and a "Total" column is allowed. Columns about attendance,
+         rank, status or notes are never mistaken for the score.
      ===================================================================== */
 
   const BADGE_RULES = {
-    topPerformerPercent: 90,  // final score at/above this percentage earns Top Performer
-    finalMaxScore: 100,       // a bare number in the final-score column is read as "out of this"
+    // 🏆 Top Performer — measured against the ACTIVE submitters (see findScoreBenchmark)
+    topPerformerMargin: 0,    // 0 = at or above the average of the active submitters (the default rule).
+                              // Stricter: 0.5 = average + half a standard deviation,
+                              //           1   = average + one standard deviation (about the top sixth).
+    minSubmitters: 2,         // active submitters needed before there is anything to compare against
+                              // (a lone submitter would just be measured against themselves)
+    countZeroScores: false,   // false: a 0 means "did not submit" and is left out of the average
+    scoreColumn: null,        // force the column that holds the final score — e.g. 'Final Score', 'Total'
+                              // or 'T3'; null = detect it from the headers
+
+    // ⚡ Attendance and 🔥 Consistent Learner
     passPercent: 50,          // a task graded on a known scale (7/10, 70%, 0.7) must reach this to pass
     taskMaxScore: null,       // set e.g. 10 if task grades are bare numbers out of that maximum;
                               // null = a bare task number counts as submitted & passed when above 0
@@ -687,44 +705,85 @@
     return match ? { bare: toNumber(match[1]) } : null;
   }
 
-  /** A mark as a percentage, or null when it can't be read with confidence.
-   *  A bare number <= 1 is a fraction (Excel stores 92% as 0.92); a bare number
-   *  above 1 is read as "out of maxScore"; anything bigger is unreadable. */
-  function toPercent(raw, maxScore) {
-    const mark = parseMark(raw);
-    if (!mark) return null;
-    let percent;
-    if (mark.percent !== undefined) percent = mark.percent;
-    else if (mark.bare >= 0 && mark.bare <= 1) percent = mark.bare * 100;
-    else if (mark.bare > 1 && mark.bare <= maxScore) percent = (mark.bare / maxScore) * 100;
-    else return null;
-    return Number.isFinite(percent) && percent >= 0 ? Math.round(percent * 1e6) / 1e6 : null;
-  }
+  /* ---- 🏆 Top Performer: relative to the ACTIVE submitters ---- */
 
-  function formatPercent(percent) {
-    return String(Math.round(percent * 10) / 10);
-  }
-
-  /* ---- 🏆 Top Performer: find the "final score" column ---- */
-  const FINAL_SCORE_EXCLUDE = /attend|حضور|absen|غياب|rank|ترتيب|position|status|حاله|e-?mail|note|ملاحظ|comment|تعليق|date|تاريخ|total|مجموع/;
-  const FINAL_SCORE_TIERS = [
-    /final|نهائ|overall|اجمال/,                     // "Final Score", "Overall %", "الدرجة النهائية", "النسبة النهائية"
-    /percent|%|نسبه|score|grade|mark|درجه/,         // any other score-like column
+  // Columns that can hold the final score, best match first. Because the
+  // comparison is relative, the scale (out of 10, 50, 100...) doesn't matter,
+  // so a "Total" column is fine. Attendance, rank, status, notes and the like
+  // are never candidates.
+  const SCORE_COLUMN_EXCLUDE = /attend|حضور|absen|غياب|rank|ترتيب|position|status|حاله|e-?mail|note|ملاحظ|remark|comment|تعليق|date|تاريخ|phone|mobile|هاتف|جوال/;
+  const SCORE_COLUMN_TIERS = [
+    /final|نهائ|overall|اجمال/,                          // "Final Score", "Overall %", "الدرجة النهائية"
+    /total|مجموع/,                                       // "Total", "المجموع"
+    /percent|%|نسبه|score|grade|mark|point|result|درجه|نقاط|نتيجه/,   // any other score-like column
   ];
 
-  /** The student's final score as a percentage: { header, percent } or null.
-   *  Earlier tiers win; within a tier the first readable column wins. */
-  function findFinalScore(columns, raw) {
-    for (let t = 0; t < FINAL_SCORE_TIERS.length; t += 1) {
-      for (let i = 0; i < columns.final.length; i += 1) {
-        const header = columns.final[i];
-        const label = normalizeBadgeText(header);
-        if (FINAL_SCORE_EXCLUDE.test(label) || !FINAL_SCORE_TIERS[t].test(label)) continue;
-        const percent = toPercent(raw[header], BADGE_RULES.finalMaxScore);
-        if (percent !== null) return { header, percent };
-      }
+  /** One cell as a usable grade — { value, explicitPercent } — or null when it
+   *  isn't one: blank, "N/A", "Absent", "Not submitted", a boolean, or a nested
+   *  object. Any scale is accepted (10, 45/50, 92%, "٩٢"). */
+  function readScore(cell) {
+    if (isEmptyCell(cell) || typeof cell === 'object' || typeof cell === 'boolean') return null;
+    const mark = parseMark(cell);
+    if (!mark) return null;
+    const value = mark.percent !== undefined ? mark.percent : mark.bare;
+    return Number.isFinite(value) ? { value, explicitPercent: mark.percent !== undefined } : null;
+  }
+
+  /** Is this a real submission? A 0 is read as "did not submit" (it would only
+   *  drag the average down), and a negative number is never a grade. */
+  function isSubmission(score) {
+    return !!score && (score.value > 0 || (BADGE_RULES.countZeroScores && score.value === 0));
+  }
+
+  /** The benchmark for one column: the mean (and spread) over ACTIVE
+   *  submitters only. Returns null when fewer than minSubmitters exist. */
+  function buildScoreBenchmark(cohort, header) {
+    const scores = cohort.map((row) => readScore(row && row[header])).filter(isSubmission);
+    if (scores.length < BADGE_RULES.minSubmitters) return null;
+
+    // Excel stores 92% as 0.92. When every plain number in the column is <= 1
+    // they are fractions: scale them so they line up with typed "92%" values.
+    const fractional = scores.some((s) => !s.explicitPercent) && scores.every((s) => s.explicitPercent || s.value <= 1);
+    const valueOf = (score) => (fractional && !score.explicitPercent ? score.value * 100 : score.value);
+
+    const values = scores.map(valueOf);
+    const mean = values.reduce((sum, v) => sum + v, 0) / values.length;
+    const stdDev = Math.sqrt(values.reduce((sum, v) => sum + (v - mean) * (v - mean), 0) / values.length);
+    return {
+      header,
+      count: values.length,
+      mean,
+      stdDev,
+      threshold: mean + BADGE_RULES.topPerformerMargin * stdDev,
+      valueOf,
+      isPercent: fractional || scores.every((s) => s.explicitPercent),
+    };
+  }
+
+  /** Picks ONE column for the whole cohort (so everyone is compared on the
+   *  same thing): the best-matching header that has enough active submitters. */
+  function findScoreBenchmark(columns, cohort) {
+    if (!Array.isArray(cohort) || !cohort.length) return null;
+    const candidates = [];
+    if (BADGE_RULES.scoreColumn) {
+      candidates.push(BADGE_RULES.scoreColumn);
+    } else {
+      SCORE_COLUMN_TIERS.forEach((tier) => {
+        columns.final.forEach((header) => {
+          const label = normalizeBadgeText(header);
+          if (!SCORE_COLUMN_EXCLUDE.test(label) && tier.test(label) && candidates.indexOf(header) === -1) candidates.push(header);
+        });
+      });
+    }
+    for (let i = 0; i < candidates.length; i += 1) {
+      const benchmark = buildScoreBenchmark(cohort, candidates[i]);
+      if (benchmark) return benchmark;
     }
     return null;
+  }
+
+  function formatScore(value, isPercent) {
+    return `${Math.round(value * 100) / 100}${isPercent ? '%' : ''}`;
   }
 
   /* ---- ⚡ 100% Attendance ---- */
@@ -786,9 +845,19 @@
 
     const earned = [];
 
-    const score = findFinalScore(columns, raw);
-    if (score && score.percent >= BADGE_RULES.topPerformerPercent) {
-      earned.push({ id: 'top-performer', icon: '🏆', tone: 'gold', titleKey: 'badge.top.title', descKey: 'badge.top.desc', descVars: { score: formatPercent(score.percent) } });
+    const benchmark = findScoreBenchmark(columns, studentData.cohort);
+    if (benchmark) {
+      const own = readScore(raw[benchmark.header]);
+      if (isSubmission(own)) {
+        const value = benchmark.valueOf(own);
+        // 1e-9 so floating-point noise (2.2 vs a mean of 2.2000000000000006) can't deny an exact match
+        if (value > 0 && value >= benchmark.threshold - 1e-9) {
+          earned.push({
+            id: 'top-performer', icon: '🏆', tone: 'gold', titleKey: 'badge.top.title', descKey: 'badge.top.desc',
+            descVars: { score: formatScore(value, benchmark.isPercent), average: formatScore(benchmark.mean, benchmark.isPercent), n: benchmark.count },
+          });
+        }
+      }
     }
 
     const attendance = evaluateAttendance(columns, raw);
@@ -843,10 +912,10 @@
 
   /** Injects the badges into the results. A failure here can never stop the
    *  results from showing: it is logged and the badge area stays hidden. */
-  function renderAchievements(columns, student) {
+  function renderAchievements(columns, student, cohort) {
     try {
       const el = getAchievementsEl();
-      const html = renderBadges({ columns, raw: student.raw });
+      const html = renderBadges({ columns, raw: student.raw, cohort: Array.isArray(cohort) ? cohort.map((s) => s.raw) : [] });
       el.innerHTML = html;
       el.hidden = !html;
     } catch (err) {
@@ -855,9 +924,9 @@
     }
   }
 
-  function renderStudent(columns, student) {
+  function renderStudent(columns, student, cohort) {
     renderProfile(columns, student);
-    renderAchievements(columns, student);
+    renderAchievements(columns, student, cohort);
     renderTimeline(columns, student);
     renderFinalResults(columns, student);
     setViewState({ results: true });
@@ -897,7 +966,7 @@
       }
 
       console.log('%cCourseTrack — matched student object:', 'color:#16a34a;font-weight:700;', student);
-      renderStudent(columns, student);
+      renderStudent(columns, student, students);   // `students` = the whole cohort, for the Top Performer benchmark
     } catch (err) {
       console.error('CourseTrack — search error:', err);
       I18N.setText(dom.errorTitle, 'err.generic.title');
