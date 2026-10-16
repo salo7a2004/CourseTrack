@@ -575,7 +575,8 @@
                    pool Top Performer is measured against
 
      The three rules
-       🏆 Top Performer      final score at or above the average of the ACTIVE submitters
+       🏆 Top Performer      at or above the average of the ACTIVE submitters — on the final score,
+                             or, when the sheet has no final/total column, on any weekly task
        ⚡ 100% Attendance    no absence or negative mark in any recorded meeting
        🔥 Consistent Learner every published task submitted AND passed
 
@@ -599,6 +600,13 @@
          never has to assume a maximum score: 10/10, 45/50 and 92/100 all
          work, and a "Total" column is allowed. Columns about attendance,
          rank, status or notes are never mistaken for the score.
+       • FALLBACK for sheets without a final/total column (only weekly task
+         grades): each task column is its own assessment with its OWN average,
+         taken over the students who actually have a grade for THAT task. The
+         student earns the badge when they are at or above the average in any
+         task (BADGE_RULES.minTasksAtOrAboveAverage raises that). The badge
+         says which week it was earned in. Open the portal with ?badgeDebug=1
+         to see, in the browser console, why a student did or didn't qualify.
      ===================================================================== */
 
   const BADGE_RULES = {
@@ -611,6 +619,13 @@
     countZeroScores: false,   // false: a 0 means "did not submit" and is left out of the average
     scoreColumn: null,        // force the column that holds the final score — e.g. 'Final Score', 'Total'
                               // or 'T3'; null = detect it from the headers
+
+    // 🏆 …and the fallback used when NO final/total column can be benchmarked
+    minTasksAtOrAboveAverage: 1,  // weekly tasks the student must be at/above the task's average in.
+                                  // 1 = "any task" (the default rule). Raise it (2, 3…) so the badge
+                                  // reflects consistency across tasks rather than one good week.
+    includeMeetingGrades: false,  // also treat numeric meeting columns (M1, M2…) as assessments.
+                                  // Off: meetings are attendance, which the ⚡ badge already covers.
 
     // ⚡ Attendance and 🔥 Consistent Learner
     passPercent: 50,          // a task graded on a known scale (7/10, 70%, 0.7) must reach this to pass
@@ -674,6 +689,12 @@
     return 'neutral';
   }
 
+  const MARK_NUMBER = '(-?\\d{1,3}(?:,\\d{3})+(?:\\.\\d+)?|-?\\d+(?:[.,]\\d+)?)';
+  const MARK_PERCENT_RE = new RegExp(`^${MARK_NUMBER}\\s*%$`);
+  const MARK_RATIO_RE = new RegExp(`^${MARK_NUMBER}\\s*(?:/|out of|من)\\s*${MARK_NUMBER}$`, 'i');
+  const MARK_BARE_RE = new RegExp(`^${MARK_NUMBER}$`);
+  const markToNumber = (piece) => (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(piece) ? Number(piece.replace(/,/g, '')) : Number(piece.replace(',', '.')));
+
   /** Reads a mark as a number, in whichever form Excel/typists produced it:
    *  92 · "92" · "92.5" · "92,5" · "1,000" · "92%" · "46/50" · "46 out of 50"
    *  · "٩٢" (Arabic-Indic digits) · "٩٢٪" · "٤٦ من ٥٠".
@@ -691,18 +712,15 @@
       .trim();
     if (!text) return null;
 
-    const part = '(-?\\d{1,3}(?:,\\d{3})+(?:\\.\\d+)?|-?\\d+(?:[.,]\\d+)?)';
-    const toNumber = (piece) => (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(piece) ? Number(piece.replace(/,/g, '')) : Number(piece.replace(',', '.')));
-
-    let match = text.match(new RegExp(`^${part}\\s*%$`));
-    if (match) return { percent: toNumber(match[1]) };
-    match = text.match(new RegExp(`^${part}\\s*(?:/|out of|من)\\s*${part}$`, 'i'));
+    let match = text.match(MARK_PERCENT_RE);
+    if (match) return { percent: markToNumber(match[1]) };
+    match = text.match(MARK_RATIO_RE);
     if (match) {
-      const denominator = toNumber(match[2]);
-      return denominator > 0 ? { percent: (toNumber(match[1]) / denominator) * 100 } : null;
+      const denominator = markToNumber(match[2]);
+      return denominator > 0 ? { percent: (markToNumber(match[1]) / denominator) * 100 } : null;
     }
-    match = text.match(new RegExp(`^${part}$`));
-    return match ? { bare: toNumber(match[1]) } : null;
+    match = text.match(MARK_BARE_RE);
+    return match ? { bare: markToNumber(match[1]) } : null;
   }
 
   /* ---- 🏆 Top Performer: relative to the ACTIVE submitters ---- */
@@ -837,6 +855,105 @@
     return { recorded, passed };
   }
 
+  /** Does a score meet its benchmark? The 1e-9 keeps floating-point noise
+   *  (2.2 against a mean of 2.2000000000000006) from denying an exact match. */
+  function meetsBenchmark(value, benchmark) {
+    return value > 0 && value >= benchmark.threshold - 1e-9;
+  }
+
+  const round2 = (x) => Math.round(x * 100) / 100;
+
+  /** Opt-in diagnostics: open the portal with ?badgeDebug=1 (or set
+   *  localStorage coursetrack_badge_debug = 1) and the browser console explains
+   *  every Top Performer decision. Off for students. */
+  function badgeDebugEnabled() {
+    try {
+      return /[?&]badgeDebug(=1|=true)?(&|$)/.test(window.location.search) || window.localStorage.getItem('coursetrack_badge_debug') === '1';
+    } catch (err) { return false; }
+  }
+
+  function logTopPerformerTrace(columns, raw, trace) {
+    console.groupCollapsed(`CourseTrack badges — Top Performer decision for ${raw[columns.code] === undefined ? 'this student' : raw[columns.code]}`);
+    console.table(trace);
+    console.groupEnd();
+  }
+
+  /**
+   * 🏆 Top Performer. Returns { badge, trace }.
+   *   1. An explicit final / total / score column that has enough active
+   *      submitters is THE assessment. If it exists the verdict is final.
+   *   2. Otherwise (no such column) every weekly task column is an assessment
+   *      with its own benchmark — the average of the students who actually have
+   *      a grade for THAT task — and the student qualifies when they are at or
+   *      above it in at least BADGE_RULES.minTasksAtOrAboveAverage of them.
+   */
+  function evaluateTopPerformer(columns, raw, cohort) {
+    const trace = badgeDebugEnabled() ? [] : null;
+    const note = (entry) => { if (trace) trace.push(entry); };
+
+    // 1) explicit final / total column
+    const final = findScoreBenchmark(columns, cohort);
+    if (final) {
+      const own = readScore(raw[final.header]);
+      const value = isSubmission(own) ? final.valueOf(own) : null;
+      const qualifies = value !== null && meetsBenchmark(value, final);
+      note({
+        assessment: `final column "${final.header}"`, activeSubmitters: final.count, average: round2(final.mean),
+        needs: round2(final.threshold), yourScore: value === null ? null : round2(value),
+        verdict: qualifies ? 'QUALIFIES' : (value === null ? 'this student has no valid score here' : 'below the benchmark'),
+      });
+      return {
+        trace,
+        badge: qualifies ? {
+          id: 'top-performer', icon: '🏆', tone: 'gold', titleKey: 'badge.top.title', descKey: 'badge.top.desc',
+          descVars: { score: formatScore(value, final.isPercent), average: formatScore(final.mean, final.isPercent), n: final.count },
+        } : null,
+      };
+    }
+    note({ assessment: 'final / total column', verdict: `none with at least ${BADGE_RULES.minSubmitters} active submitters — using the weekly task columns instead` });
+
+    // 2) fallback: each weekly task against its own average
+    const assessments = columns.tasks.concat(BADGE_RULES.includeMeetingGrades ? columns.meetings : []);
+    const wins = [];
+    assessments.forEach(({ key, num }) => {
+      const benchmark = buildScoreBenchmark(cohort, key);
+      const own = readScore(raw[key]);
+      const value = benchmark && isSubmission(own) ? benchmark.valueOf(own) : null;
+      const qualifies = value !== null && meetsBenchmark(value, benchmark);
+      if (qualifies) wins.push({ num, value, benchmark, z: benchmark.stdDev > 0 ? (value - benchmark.mean) / benchmark.stdDev : 0 });
+      if (trace && (benchmark || isSubmission(own))) {
+        note({
+          assessment: `Week ${num} (${key})`, activeSubmitters: benchmark ? benchmark.count : `fewer than ${BADGE_RULES.minSubmitters}`,
+          average: benchmark ? round2(benchmark.mean) : null, needs: benchmark ? round2(benchmark.threshold) : null,
+          yourScore: value !== null ? round2(value) : (isSubmission(own) ? own.value : null),
+          verdict: qualifies ? 'QUALIFIES' : (!benchmark ? 'not enough active submitters for this task' : (value === null ? 'this student has no valid grade' : 'below this task\'s average')),
+        });
+      }
+    });
+
+    if (wins.length < BADGE_RULES.minTasksAtOrAboveAverage || !wins.length) {
+      note({ assessment: 'result', verdict: `at/above the task average in ${wins.length} task(s); ${BADGE_RULES.minTasksAtOrAboveAverage} needed` });
+      return { trace, badge: null };
+    }
+    wins.sort((a, b) => (b.z - a.z) || (b.num - a.num));   // describe the strongest week (latest on a tie)
+    const best = wins[0];
+    const vars = {
+      week: best.num,
+      score: formatScore(best.value, best.benchmark.isPercent),
+      average: formatScore(best.benchmark.mean, best.benchmark.isPercent),
+      n: best.benchmark.count,
+    };
+    note({ assessment: 'result', verdict: `QUALIFIES — at/above the task average in ${wins.length} task(s)` });
+    return {
+      trace,
+      badge: {
+        id: 'top-performer', icon: '🏆', tone: 'gold', titleKey: 'badge.top.title',
+        descKey: wins.length > 1 ? 'badge.top.descTasks' : 'badge.top.descTask',
+        descVars: wins.length > 1 ? { count: wins.length, week: vars.week, score: vars.score, average: vars.average } : vars,
+      },
+    };
+  }
+
   /** The badges this student has earned, in display order. Pure: no DOM. */
   function evaluateBadges(studentData) {
     const columns = studentData && studentData.columns;
@@ -845,20 +962,9 @@
 
     const earned = [];
 
-    const benchmark = findScoreBenchmark(columns, studentData.cohort);
-    if (benchmark) {
-      const own = readScore(raw[benchmark.header]);
-      if (isSubmission(own)) {
-        const value = benchmark.valueOf(own);
-        // 1e-9 so floating-point noise (2.2 vs a mean of 2.2000000000000006) can't deny an exact match
-        if (value > 0 && value >= benchmark.threshold - 1e-9) {
-          earned.push({
-            id: 'top-performer', icon: '🏆', tone: 'gold', titleKey: 'badge.top.title', descKey: 'badge.top.desc',
-            descVars: { score: formatScore(value, benchmark.isPercent), average: formatScore(benchmark.mean, benchmark.isPercent), n: benchmark.count },
-          });
-        }
-      }
-    }
+    const top = evaluateTopPerformer(columns, raw, studentData.cohort);
+    if (top.badge) earned.push(top.badge);
+    if (top.trace) logTopPerformerTrace(columns, raw, top.trace);
 
     const attendance = evaluateAttendance(columns, raw);
     if (attendance.recorded >= BADGE_RULES.minRecordedMeetings && attendance.absences === 0) {
