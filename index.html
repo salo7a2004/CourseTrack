@@ -176,6 +176,19 @@
           </div>
         </div>
 
+        <!-- Weekly progress chart (Chart.js). Hidden until the student has at least two numeric grades. -->
+        <div class="section-block progress-section" id="progress-section" hidden>
+          <h3 class="section-title">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg>
+            <span data-i18n="chart.title">Weekly Progress</span>
+          </h3>
+          <div class="glass-card chart-card">
+            <div class="chart-wrap">
+              <canvas id="progressChart" role="img" aria-label="Weekly grades chart"></canvas>
+            </div>
+          </div>
+        </div>
+
         <div class="section-block" id="timeline-section" hidden>
           <h3 class="section-title">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 2v4M16 2v4M3 9h18M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/></svg>
@@ -203,6 +216,11 @@
 
   </div>
 
+  <!-- Chart.js, pinned to an EXACT version (never "latest"). crossorigin + no-referrer keep the request anonymous.
+       To also lock the file's contents, add an integrity="sha…" attribute with the hash shown for this exact file at
+       https://cdnjs.com/libraries/Chart.js/4.4.1 ("Copy SRI"); the page works without it, the chart just degrades
+       gracefully (hidden) if the script can't load. -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script src="config.js"></script>
   <script src="i18n.js"></script>
   <script src="student.js"></script>

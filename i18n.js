@@ -200,6 +200,13 @@
       'badge.attendance.desc': 'No absences across {n} recorded meeting(s)',
       'badge.consistent.title': 'Consistent Learner',
       'badge.consistent.desc': 'All {n} published task(s) submitted and passed',
+
+      /* ---- weekly progress chart ---- */
+      'chart.title': 'Weekly Progress',
+      'chart.week': 'Week',
+      'chart.score': 'Score',
+      'chart.aria': 'Line chart of weekly grades. {summary}',
+      'chart.ariaPoint': 'week {week}: {value}',
     },
 
     ar: {
@@ -354,6 +361,13 @@
       'badge.attendance.desc': 'لا غياب في {n} من الاجتماعات المسجّلة',
       'badge.consistent.title': 'متعلّم مثابر',
       'badge.consistent.desc': 'تم تسليم جميع المهام المنشورة ({n}) واجتيازها',
+
+      /* ---- weekly progress chart ---- */
+      'chart.title': 'التقدّم الأسبوعي',
+      'chart.week': 'الأسبوع',
+      'chart.score': 'الدرجة',
+      'chart.aria': 'مخطط خطي للدرجات الأسبوعية. {summary}',
+      'chart.ariaPoint': 'الأسبوع {week}: {value}',
     },
   };
 

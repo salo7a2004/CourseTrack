@@ -953,3 +953,28 @@ body.auth-locked .auth-gate {
 
 @media (max-width: 520px) { .badge { flex-basis: 100%; max-width: none; } }
 @media (prefers-reduced-motion: reduce) { .badge { animation: none; transition: none; } .badge:hover { transform: none; } }
+
+/* =======================================================================
+   26. Weekly progress chart (index.html) — Chart.js draws on a canvas, so it
+   can't use CSS directly: student.js reads these tokens at render time and
+   re-renders when the theme or language changes.
+   ======================================================================= */
+/* Line 1 is the brand colour (student.js lightens it in dark mode — see readChartTheme).
+   Line 2 stays >= 3:1 against the card in both themes (a plain #f59e0b amber was only 2.2:1 on white). */
+:root { --chart-line-1: var(--color-primary); --chart-line-2: #d97706; }
+[data-theme="dark"] { --chart-line-2: #fbbf24; }
+
+.chart-card { padding: 20px 22px 14px; }
+/* Chart.js needs a RELATIVELY POSITIONED parent with a definite height to size a
+   responsive canvas. The plot stays left-to-right in Arabic: weeks are numbers
+   and time reads left to right; only the legend/tooltip text is set RTL. */
+.chart-wrap { position: relative; width: 100%; height: clamp(230px, 36vw, 340px); direction: ltr; }
+.chart-wrap canvas { display: block; max-width: 100%; }
+
+@media print {
+  /* the report card carries a pre-drawn bitmap of the chart (see paintChartForPrint) */
+  #print-root .progress-section { break-inside: avoid; page-break-inside: avoid; }
+  #print-root .chart-card { padding: 14px 16px; }
+  #print-root .chart-wrap { height: auto !important; }
+  #print-root .chart-wrap canvas { width: 100% !important; height: auto !important; }
+}

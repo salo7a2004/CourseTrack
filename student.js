@@ -1030,12 +1030,360 @@
     }
   }
 
+  /* =====================================================================
+     WEEKLY PROGRESS CHART (Chart.js 4.x, loaded from the CDN in index.html)
+     ---------------------------------------------------------------------
+     buildWeeklyData(columns, raw) -> the student's grades as plain data
+     renderChart(weeklyData)       -> draws them (the isolated rendering function)
+     renderProgressChart(...)      -> injects it into the results view
+
+       weeklyData = {
+         weeks:  [1, 2, 3, 4],                          // week numbers (x axis)
+         series: [                                      // one line per kind of grade
+           { id: 'task', labelKey: 'session.task', values: [7, 8, null, 10], percent: false },
+           { id: 'meeting', labelKey: 'session.meeting', values: [...], percent: false },
+         ],                                             // null = no numeric grade that week
+       }
+
+     Choices worth knowing:
+       • Only NUMERIC grades are plotted. Blank cells, "Absent", "Passed" and the
+         like are gaps in the line — never a made-up zero. A real 0 is plotted.
+       • Weeks after the last graded one are left off; earlier gaps stay visible.
+       • Grades on very different scales (e.g. out of 10 vs out of 100) would
+         flatten one line, so the second series gets its own Y axis on the right.
+       • Colours, fonts and grid come from the CSS variables of the ACTIVE theme at
+         render time, and the chart is rebuilt (without animation) when the theme or
+         language switches. Charts are destroyed before reuse, as Chart.js requires.
+       • If Chart.js can't load (offline, blocked CDN) the section simply stays
+         hidden; the rest of the results are unaffected.
+     ===================================================================== */
+
+  const CHART_MIN_POINTS = 2;      // a line needs at least two grades, otherwise the section stays hidden
+  const CHART_SCALE_RATIO = 5;     // series whose maxima differ by more than this get separate Y axes
+  const PRINT_CHART_SIZE = { width: 1200, height: 480 };
+
+  // The report card always prints on white paper, so its chart uses this fixed
+  // light palette; the on-screen chart reads the active theme from CSS instead.
+  const PRINT_CHART_THEME = {
+    text: '#46536c', strong: '#1e2a47', grid: 'rgba(30, 42, 71, 0.12)', surface: '#ffffff',
+    lines: ['#2f54eb', '#d97706'], fontFamily: 'Inter, "Segoe UI", sans-serif',
+  };
+
+  let progressChart = null;        // the live Chart instance, if any
+  let lastWeeklyData = null;       // what it shows (also used to redraw it for the PDF)
+
+  function formatChartValue(value, percent) {
+    return `${Math.round(value * 100) / 100}${percent ? '%' : ''}`;
+  }
+
+  /** The student's row -> weeklyData, or null when there is nothing worth charting. */
+  function buildWeeklyData(columns, raw) {
+    const weekNumbers = Array.from(new Set(columns.tasks.concat(columns.meetings).map((c) => c.num))).sort((a, b) => a - b);
+
+    const makeSeries = (list, id, labelKey) => {
+      const keyByWeek = new Map(list.map((c) => [c.num, c.key]));
+      const scores = weekNumbers.map((num) => {
+        const score = keyByWeek.has(num) ? readScore(raw[keyByWeek.get(num)]) : null;
+        return score && score.value >= 0 ? score : null;     // blank / text / boolean / negative are not grades
+      });
+      const real = scores.filter(Boolean);
+      if (!real.length) return null;
+      // Excel stores 92% as 0.92: when every plain number is <= 1 they are fractions.
+      const fractional = real.some((s) => !s.explicitPercent) && real.every((s) => s.explicitPercent || s.value <= 1);
+      return {
+        id,
+        labelKey,
+        percent: fractional || real.every((s) => s.explicitPercent),
+        values: scores.map((s) => (s ? Math.round((fractional && !s.explicitPercent ? s.value * 100 : s.value) * 100) / 100 : null)),
+      };
+    };
+
+    const series = [
+      makeSeries(columns.tasks, 'task', 'session.task'),
+      makeSeries(columns.meetings, 'meeting', 'session.meeting'),
+    ].filter(Boolean);
+    if (!series.some((s) => s.values.filter((v) => v !== null).length >= CHART_MIN_POINTS)) return null;
+
+    let last = -1;
+    series.forEach((s) => s.values.forEach((v, i) => { if (v !== null && i > last) last = i; }));
+    return {
+      weeks: weekNumbers.slice(0, last + 1),
+      series: series.map((s) => Object.assign({}, s, { values: s.values.slice(0, last + 1) })),
+    };
+  }
+
+  /** Mixes a colour with white (amount 0..1) and returns a plain #rrggbb string — Chart.js
+   *  needs plain colours (it can't parse color-mix()). Understands #rgb, #rrggbb and
+   *  rgb()/rgba(); anything else is returned unchanged. */
+  function lightenColor(color, amount) {
+    let rgb = null;
+    let match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim());
+    if (match) {
+      const hex = match[1].length === 3 ? match[1].split('').map((c) => c + c).join('') : match[1];
+      rgb = [0, 2, 4].map((i) => parseInt(hex.substr(i, 2), 16));
+    } else {
+      match = /^rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)/i.exec(color);
+      if (match) rgb = [match[1], match[2], match[3]].map(Number);
+    }
+    if (!rgb) return color;
+    return `#${rgb.map((v) => Math.round(v + (255 - v) * amount).toString(16).padStart(2, '0')).join('')}`;
+  }
+
+  /** Reads the ACTIVE theme (light or dark) from the CSS variables. */
+  function readChartTheme() {
+    const styles = window.getComputedStyle(document.documentElement);
+    const token = (name, fallback) => styles.getPropertyValue(name).trim() || fallback;
+    const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    // The brand blue is applied inline on <html> (applyBrandColors), so it beats the lighter blue the
+    // stylesheet defines for dark mode and would sit at ~2.8:1 on the dark card. Lighten it for dark mode
+    // (~7:1) — still derived from the brand colour, so a rebrand carries through.
+    const brand = token('--chart-line-1', '#2f54eb');
+    return {
+      text: token('--text-body', '#46536c'),            // body text, not the dimmer muted tone: tick labels are small
+      strong: token('--text-strong', '#1e2a47'),
+      grid: token('--glass-border', 'rgba(30, 42, 71, 0.08)'),
+      surface: token('--bg-base-2', '#ffffff'),
+      lines: [dark ? lightenColor(brand, 0.45) : brand, token('--chart-line-2', '#d97706')],
+      fontFamily: token('--font-body', 'Inter, sans-serif'),
+    };
+  }
+
+  /** Spoken summary for the canvas (a screen reader can't see a drawing). */
+  function describeChart(weeklyData) {
+    const summary = weeklyData.series.map((s) => {
+      const points = s.values
+        .map((v, i) => (v === null ? null : I18N.t('chart.ariaPoint', { week: weeklyData.weeks[i], value: formatChartValue(v, s.percent) })))
+        .filter(Boolean)
+        .join('; ');
+      return `${I18N.t(s.labelKey)}: ${points}`;
+    }).join('. ');
+    return I18N.t('chart.aria', { summary });
+  }
+
+  /** Chart.js configuration. mode 'live' = the on-screen chart; 'print' = the
+   *  fixed-size, non-animated, white-background drawing used by the PDF. */
+  function buildChartConfig(weeklyData, theme, mode) {
+    const print = mode === 'print';
+    const isRtl = I18N.getDir() === 'rtl';
+    const textDirection = isRtl ? 'rtl' : 'ltr';
+    const fontScale = print ? 1.8 : 1;   // the print canvas is 1200px wide but shown ~700px wide
+    const font = (size, weight) => ({ family: theme.fontFamily, size: Math.round(size * fontScale), weight: weight || 400 });
+    const reducedMotion = !print && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    const { series } = weeklyData;
+    const maxima = series.map((s) => Math.max.apply(null, s.values.filter((v) => v !== null)));
+    const lowest = Math.min.apply(null, maxima);
+    const highest = Math.max.apply(null, maxima);
+    const dual = series.length > 1 && lowest > 0 && highest / lowest > CHART_SCALE_RATIO;
+    const axisOf = (i) => (dual && i > 0 ? 'y1' : 'y');
+    const seriesOnAxis = (axis) => series.filter((s, i) => axisOf(i) === axis);
+
+    const datasets = series.map((s, i) => {
+      const color = theme.lines[i % theme.lines.length];
+      return {
+        label: I18N.t(s.labelKey),
+        data: s.values,
+        yAxisID: axisOf(i),
+        borderColor: color,
+        backgroundColor: color,
+        pointBackgroundColor: color,
+        pointBorderColor: theme.surface,
+        pointBorderWidth: 2,
+        pointRadius: print ? 7 : 4,
+        pointHoverRadius: print ? 7 : 6,
+        borderWidth: print ? 5 : 2.5,
+        cubicInterpolationMode: 'monotone',   // smooth, but never dips or overshoots between two real grades
+        spanGaps: false,
+        fill: false,
+      };
+    });
+
+    const valueAxis = (id, position) => {
+      const onAxis = seriesOnAxis(id);
+      const percent = onAxis.every((s) => s.percent);
+      const color = dual ? theme.lines[series.indexOf(onAxis[0]) % theme.lines.length] : theme.text;
+      const title = dual ? I18N.t(onAxis[0].labelKey) : I18N.t('chart.score');
+      return {
+        type: 'linear',
+        position,
+        beginAtZero: true,
+        grid: { color: theme.grid, drawOnChartArea: id === 'y' },
+        border: { display: false },
+        ticks: { color, font: font(12), callback: (value) => formatChartValue(value, percent) },
+        title: { display: true, text: title, color, font: font(12, 600) },
+      };
+    };
+
+    const scales = {
+      x: {
+        type: 'category',
+        grid: { display: false },
+        border: { color: theme.grid },
+        ticks: { color: theme.text, font: font(12), maxRotation: 0, autoSkip: true },
+        title: { display: true, text: I18N.t('chart.week'), color: theme.text, font: font(12, 600) },
+      },
+      y: valueAxis('y', 'left'),
+    };
+    if (dual) scales.y1 = valueAxis('y1', 'right');
+
+    const config = {
+      type: 'line',
+      data: { labels: weeklyData.weeks.map(String), datasets },
+      options: {
+        responsive: !print,
+        maintainAspectRatio: false,
+        animation: print || reducedMotion ? false : { duration: 700, easing: 'easeOutQuart' },
+        interaction: { mode: 'index', intersect: false },
+        scales,
+        plugins: {
+          legend: {
+            display: series.length > 1,
+            position: 'top',
+            rtl: isRtl,
+            textDirection,
+            labels: { color: theme.text, usePointStyle: true, boxWidth: 8, boxHeight: 8, padding: 16, font: font(12, 500) },
+          },
+          tooltip: {
+            backgroundColor: theme.surface,
+            titleColor: theme.strong,
+            bodyColor: theme.text,
+            borderColor: theme.grid,
+            borderWidth: 1,
+            padding: 10,
+            cornerRadius: 10,
+            usePointStyle: true,
+            rtl: isRtl,
+            textDirection,
+            titleFont: font(13, 700),
+            bodyFont: font(12),
+            callbacks: {
+              title: (items) => I18N.t('week.title', { n: items.length ? items[0].label : '' }),
+              label: (ctx) => `${ctx.dataset.label}: ${formatChartValue(ctx.parsed.y, series[ctx.datasetIndex].percent)}`,
+            },
+          },
+        },
+      },
+    };
+
+    if (print) {
+      config.options.devicePixelRatio = 1;
+      config.options.events = [];
+      // a solid paper background — which also lets paintChartForPrint() tell a real drawing from a blank canvas
+      config.plugins = [{
+        id: 'paperBackground',
+        beforeDraw: (chart) => { chart.ctx.save(); chart.ctx.fillStyle = theme.surface; chart.ctx.fillRect(0, 0, chart.width, chart.height); chart.ctx.restore(); },
+      }];
+    }
+    return config;
+  }
+
+  function destroyChart() {
+    if (progressChart) { progressChart.destroy(); progressChart = null; }
+  }
+
+  /**
+   * Draws the weekly grades. THE isolated rendering function: it takes plain
+   * data (see weeklyData above) and touches only <canvas id="progressChart">.
+   * @param {{weeks:number[], series:{id:string,labelKey:string,values:(number|null)[],percent:boolean}[]}} weeklyData
+   * @param {{animate?:boolean}} [renderOptions]  animate:false for silent redraws (theme / language switch)
+   * @returns the Chart instance, or null when there is nothing to draw / Chart.js isn't loaded
+   */
+  function renderChart(weeklyData, renderOptions) {
+    destroyChart();                                   // Chart.js refuses a canvas that still has a chart on it
+    const canvas = document.getElementById('progressChart');
+    if (!canvas || typeof window.Chart !== 'function' || !weeklyData || !weeklyData.series.length) return null;
+
+    const stale = typeof window.Chart.getChart === 'function' ? window.Chart.getChart(canvas) : null;
+    if (stale) stale.destroy();
+
+    const config = buildChartConfig(weeklyData, readChartTheme(), 'live');
+    if (renderOptions && renderOptions.animate === false) config.options.animation = false;
+    progressChart = new window.Chart(canvas, config);
+    canvas.setAttribute('aria-label', describeChart(weeklyData));
+
+    // The results may only just have been revealed: let the chart re-measure its container.
+    window.requestAnimationFrame(() => { if (progressChart) progressChart.resize(); });
+    return progressChart;
+  }
+
+  /** Shows/hides the section and draws the chart. A failure here can never stop
+   *  the results from showing: it is logged and the section stays hidden. */
+  function renderProgressChart(columns, student) {
+    const section = document.getElementById('progress-section');
+    if (!section) return;
+    try {
+      let data = buildWeeklyData(columns, student.raw);
+      if (data && typeof window.Chart !== 'function') {
+        console.warn('CourseTrack — Chart.js is not loaded, so the progress chart is skipped.');
+        data = null;
+      }
+      lastWeeklyData = data;
+      section.hidden = !data;
+      if (data) renderChart(data); else destroyChart();
+    } catch (err) {
+      console.error('CourseTrack — progress chart failed (results are unaffected):', err);
+      lastWeeklyData = null;
+      destroyChart();
+      section.hidden = true;
+    }
+  }
+
+  /** Re-draws the chart without animation, e.g. after a theme or language switch. */
+  function refreshProgressChart() {
+    if (!lastWeeklyData || !progressChart) return;
+    try { renderChart(lastWeeklyData, { animate: false }); } catch (err) { console.error('CourseTrack — chart refresh failed:', err); }
+  }
+
+  /** The chart follows the theme toggle (data-theme on <html>) and the language switch. */
+  function initChartTheme() {
+    if (typeof MutationObserver !== 'undefined') {
+      new MutationObserver(refreshProgressChart).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    }
+    I18N.onChange(refreshProgressChart);
+  }
+
+  /**
+   * For the PDF report card: a cloned <canvas> is blank, so the chart is drawn
+   * again on a fixed-size offscreen canvas in the light print palette and its
+   * pixels are copied into the clone. Everything here is synchronous, because
+   * window.print() must stay inside the user's tap on phones.
+   * Returns false (and the caller drops the section) rather than print a blank box.
+   */
+  function paintChartForPrint(targetCanvas) {
+    if (!lastWeeklyData || typeof window.Chart !== 'function') return false;
+    const source = document.createElement('canvas');
+    source.width = PRINT_CHART_SIZE.width;
+    source.height = PRINT_CHART_SIZE.height;
+    let chart = null;
+    try {
+      const theme = Object.assign({}, PRINT_CHART_THEME, { fontFamily: readChartTheme().fontFamily });
+      chart = new window.Chart(source, buildChartConfig(lastWeeklyData, theme, 'print'));
+
+      const pixels = source.getContext('2d').getImageData(0, 0, source.width, source.height).data;
+      let drawn = false;
+      for (let i = 3; i < pixels.length; i += 4) { if (pixels[i] !== 0) { drawn = true; break; } }
+      if (!drawn) return false;
+
+      targetCanvas.removeAttribute('style');          // the clone carries the live chart's pixel sizes
+      targetCanvas.width = source.width;
+      targetCanvas.height = source.height;
+      targetCanvas.getContext('2d').drawImage(source, 0, 0);
+      return true;
+    } catch (err) {
+      console.error('CourseTrack — could not draw the chart for the report card:', err);
+      return false;
+    } finally {
+      if (chart) chart.destroy();
+    }
+  }
+
   function renderStudent(columns, student, cohort) {
     renderProfile(columns, student);
     renderAchievements(columns, student, cohort);
     renderTimeline(columns, student);
     renderFinalResults(columns, student);
     setViewState({ results: true });
+    renderProgressChart(columns, student);   // after the results are visible, so the canvas has a real size
 
     window.requestAnimationFrame(() => {
       dom.results.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1174,6 +1522,11 @@
     const resultsClone = dom.results.cloneNode(true);
     const toolbarClone = resultsClone.querySelector('.results-toolbar');
     if (toolbarClone) toolbarClone.remove();
+
+    // A cloned <canvas> is blank — swap in a fresh drawing of the chart, or drop the section.
+    const chartSectionClone = resultsClone.querySelector('.progress-section');
+    const chartCanvasClone = resultsClone.querySelector('#progressChart');
+    if (chartSectionClone && (!chartCanvasClone || !paintChartForPrint(chartCanvasClone))) chartSectionClone.remove();
     resultsClone.removeAttribute('id');
     resultsClone.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
     resultsClone.hidden = false;
@@ -1298,6 +1651,7 @@
       applyBranding();
       initTheme();
       I18N.onChange(applyBrandText);   // re-translate branding text on language switch
+      initChartTheme();                // the progress chart follows the theme + language
       initSearch();
       initRememberCode();   // NEW: Remember My Code
       initDownloadPdf();    // NEW: Download Report Card (PDF)
