@@ -10,15 +10,30 @@
   'use strict';
 
   const CONFIG = window.APP_CONFIG || {};
-  const I18N = window.I18N; // i18n.js MUST be loaded before this file (see admin.html)
+  const I18N = window.I18N;           // i18n.js and common.js MUST load before this file (see admin.html)
+  const CT = window.CourseTrack;
+  if (!I18N || !CT) {
+    // A missed file at deploy time must read as a message, never as a blank page.
+    const note = document.createElement('p');
+    note.className = 'noscript-note';
+    note.textContent = 'CourseTrack could not start: a required file (i18n.js or common.js) did not load. Upload it next to this page, then refresh.';
+    document.body.insertBefore(note, document.body.firstChild);
+    const loader = document.getElementById('loading-screen');
+    if (loader) loader.style.display = 'none';
+    return;
+  }
 
   // ISO timestamp of the last upload, kept so the "Last Update" tile can be
   // re-formatted in the new language when the language is switched.
   let lastUpdateIso = null;
 
-  // Longest any single Firebase request may take before it is aborted
-  // and reported as an error (writes carry the whole dataset).
+  // Base allowance for one Firebase request (the whole response included). The shared
+  // client adds a second for every 50 KB being uploaded, so a big write on a slow
+  // connection is not cut off while a stalled one still ends in an error.
   const FIREBASE_TIMEOUT_MS = 30000;
+
+  // Characters Firebase forbids in a key. A column header becomes a key in every stored record.
+  const UNSAFE_KEY_CHARS = /[.#$[\]\/\u0000-\u001f\u007f]/;
 
   // Dictionary KEYS (see i18n.js) — not display strings — so every error
   // is shown in the current language and re-translates if the language
@@ -77,28 +92,17 @@
     statStatus: document.getElementById('stat-status'),
   };
 
+  // Shared helpers (common.js): ONE implementation for both portals, so they cannot drift apart.
+  const { escapeHtml, applyLogo } = CT.ui;
+  const applyBrandColors = () => CT.ui.applyBrandColors(CONFIG);
+  const hideLoadingScreen = () => CT.ui.hideLoadingScreen(dom.loadingScreen);
+  const initTheme = CT.ui.theme.init;
+  const toggleTheme = CT.ui.theme.toggle;
+
   /* =====================================================================
      BRANDING (identical small setup to student.js — page-specific glue
      code, not shared business logic, so it's kept local to each page)
      ===================================================================== */
-
-  function applyBrandColors() {
-    const { colors } = CONFIG;
-    if (!colors) return;
-    const root = document.documentElement.style;
-    if (colors.primary) root.setProperty('--color-primary', colors.primary);
-    if (colors.secondary) root.setProperty('--color-accent', colors.secondary);
-  }
-
-  function applyLogo(imgEl, placeholderEl, path) {
-    if (!imgEl) return;
-    imgEl.hidden = true;
-    if (placeholderEl) placeholderEl.hidden = false;
-    if (!path) return;
-    imgEl.onload = () => { imgEl.hidden = false; if (placeholderEl) placeholderEl.hidden = true; };
-    imgEl.onerror = () => { imgEl.hidden = true; imgEl.removeAttribute('src'); if (placeholderEl) placeholderEl.hidden = false; };
-    imgEl.src = path;
-  }
 
   function applyBranding() {
     applyBrandColors();
@@ -144,31 +148,9 @@
     dom.infoVersion.textContent = CONFIG.appVersion || '—';
   }
 
-  function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-  }
-
   /* =====================================================================
      THEME
      ===================================================================== */
-
-  function applyTheme(theme) {
-    document.documentElement.setAttribute('data-theme', theme);
-    try { localStorage.setItem('coursetrack_theme', theme); } catch (err) { /* non-fatal */ }
-  }
-
-  function initTheme() {
-    let saved = null;
-    try { saved = localStorage.getItem('coursetrack_theme'); } catch (err) { /* non-fatal */ }
-    applyTheme(saved === 'dark' ? 'dark' : 'light');
-  }
-
-  function toggleTheme() {
-    const current = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
-    applyTheme(current === 'dark' ? 'light' : 'dark');
-  }
 
   /* =====================================================================
      EXCEL PARSING (mirrors the same sheet-selection rules the rest of
@@ -355,21 +337,66 @@
     return rowNumbers.length > MAX_LISTED_ROWS ? `${shown} … (+${rowNumbers.length - MAX_LISTED_ROWS})` : shown;
   }
 
+  /** 0 -> "A", 25 -> "Z", 26 -> "AA": the sheet column a header sits in (assuming the table starts in column A). */
+  function columnLabel(index) {
+    let n = index + 1;
+    let label = '';
+    while (n > 0) {
+      const r = (n - 1) % 26;
+      label = String.fromCharCode(65 + r) + label;
+      n = Math.floor((n - 1) / 26);
+    }
+    return label;
+  }
+
+  function formatColumnList(columns) {
+    return columns.length > 8 ? `${columns.slice(0, 8).join(', ')} … (+${columns.length - 8})` : columns.join(', ');
+  }
+
   /**
    * @param {{headers: string[], rows: any[][], headerRowIndex?: number, sheetName?: string}} data
    *        `rows` are the data rows below the header; rows[0] is Excel row headerRowIndex + 2.
-   * @returns {{ok: boolean, issues: object[], ...}}  every problem found, not just the first.
-   *   issue types: missingHeader {column} · missingCode {rows} · missingName {rows}
-   *                · duplicateCode {code, rows} · keyCollision {key, codes, rows}
+   * @returns {object} { ok, issues, warnings, ... } — every problem found, not just the first.
+   *   issue types:   missingHeader {column} · badHeader {columns} · headlessColumn {columns}
+   *                  · missingCode {rows} · missingName {rows} · duplicateCode {code, rows}
+   *                  · keyCollision {key, codes, rows}
+   *   warning types: duplicateHeader {header, columns}   (does not block the upload)
    */
   function validateStudentData({ headers, rows, headerRowIndex = 0, sheetName = '' }) {
     const issues = [];
+    const warnings = [];   // non-blocking: the upload goes ahead and the admin is told
     const codeCol = headers.findIndex((h) => /code/i.test(String(h).trim()));
     const nameCol = headers.findIndex((h, c) => c !== codeCol && NAME_HEADER_PATTERN.test(String(h).trim()));
 
     // 1. mandatory headers — all missing ones are reported together
     if (codeCol === -1) issues.push({ type: 'missingHeader', column: 'code' });
     if (nameCol === -1) issues.push({ type: 'missingHeader', column: 'name' });
+
+    // 4. column headers that cannot be stored. Every header becomes a key in every record, and Firebase
+    //    refuses the WHOLE write if any key is blank or contains . # $ [ ] / — so these are caught here,
+    //    in plain words, instead of failing at the database with a cryptic message.
+    const badHeaders = [];
+    const headlessColumns = [];
+    headers.forEach((header, c) => {
+      if (header === '') {
+        // an empty, header-less column is simply left out of the stored records; one that holds data cannot be
+        if (rows.some((row) => cellText(row[c]) !== '')) headlessColumns.push(columnLabel(c));
+      } else if (UNSAFE_KEY_CHARS.test(header)) {
+        badHeaders.push(`${columnLabel(c)} "${header}"`);
+      }
+    });
+    if (badHeaders.length) issues.push({ type: 'badHeader', columns: badHeaders });
+    if (headlessColumns.length) issues.push({ type: 'headlessColumn', columns: headlessColumns });
+
+    // Duplicate headers have always uploaded, so they don't block — but the later column silently
+    // overwrites the earlier one in every record, so the admin must be told.
+    const headerColumns = new Map();
+    headers.forEach((header, c) => {
+      if (header === '') return;
+      if (!headerColumns.has(header)) headerColumns.set(header, []);
+      headerColumns.get(header).push(columnLabel(c));
+    });
+    headerColumns.forEach((cols, header) => { if (cols.length > 1) warnings.push({ type: 'duplicateHeader', header, columns: cols }); });
 
     // 2 + 3. row checks (each runs for whichever of the two columns exists)
     const firstDataRowNumber = headerRowIndex + 2; // the header itself is Excel row headerRowIndex + 1
@@ -424,6 +451,7 @@
     return {
       ok: issues.length === 0,
       issues,
+      warnings,
       sheetName,
       headerRow: headerRowIndex + 1,
       codeColumn: codeCol === -1 ? null : headers[codeCol],
@@ -449,7 +477,7 @@
     console.log('Rows read:', result.totalRows, '| student rows:', result.studentRows, '| blank rows ignored:', result.blankRows);
     console.table(result.issues.map((issue) => ({
       problem: issue.type,
-      detail: issue.column || issue.code || issue.codes || '',
+      detail: issue.column || issue.code || issue.codes || (issue.columns ? issue.columns.join(', ') : ''),
       excelRows: issue.rows ? issue.rows.join(', ') : '',
     })));
     console.log('Full structured result:', result);
@@ -505,51 +533,21 @@
     return `${url}${url.includes('?') ? '&' : '?'}auth=${encodeURIComponent(secret)}`;
   }
 
-  /**
-   * One small helper for every Firebase REST call (GET/PUT), with
-   * consistent network/permission error handling so neither call site
-   * below has to repeat it.
-   */
-  async function firebaseRequest(url, method, body) {
-    // Every request is guaranteed to settle: a stalled connection would
-    // otherwise leave the upload steps (and the locked dropzone) hanging
-    // forever, since `finally` only runs once the request settles.
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), FIREBASE_TIMEOUT_MS);
+  // How each kind of Firebase failure (see common.js) is worded for the admin.
+  const failedWithReason = (e) => ({ key: 'err.fbFailed', vars: { reason: e.reason || e.message } });
+  const ADMIN_ERROR_KEYS = {
+    timeout: 'err.fbTimeout', offline: 'err.offline', network: 'err.fbNetwork', auth: 'err.fbDenied',
+    notfound: 'err.fbNotFound', ratelimit: 'err.fbRateLimited',
+    server: failedWithReason, client: failedWithReason, parse: failedWithReason, remote: failedWithReason,
+  };
 
-    let response;
-    let data = null;
-    try {
-      try {
-        response = await fetch(appendAuthParam(url), {
-          method,
-          headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
-          body: body !== undefined ? JSON.stringify(body) : undefined,
-          signal: controller.signal,
-        });
-      } catch (err) {
-        throw I18N.error(err && err.name === 'AbortError' ? 'err.fbTimeout' : 'err.fbNetwork');
-      }
-
-      try {
-        data = await response.json();
-      } catch (err) {
-        if (err && err.name === 'AbortError') throw I18N.error('err.fbTimeout');
-        /* otherwise: a successful PUT can legitimately return an empty/non-JSON body */
-      }
-    } finally {
-      window.clearTimeout(timeoutId);
-    }
-
-    if (!response.ok || (data && data.error)) {
-      const reason = (data && data.error) || `HTTP ${response.status}`;
-      if (response.status === 401 || response.status === 403 || /permission/i.test(reason)) {
-        throw I18N.error('err.fbDenied');
-      }
-      throw I18N.error('err.fbFailed', { reason });
-    }
-
-    return data;
+  /** One call to the shared Firebase client. GET and PUT are idempotent, so a transient
+   *  failure is retried once; writes use print=silent so Firebase doesn't echo the whole
+   *  dataset back; the admin secret (if any) is appended by appendAuthParam and is never logged. */
+  function firebaseRequest(url, method, body) {
+    return CT.firebase.request(appendAuthParam(url), {
+      method, body, timeoutMs: FIREBASE_TIMEOUT_MS, retries: 1, silent: method === 'PUT', errorKeys: ADMIN_ERROR_KEYS,
+    });
   }
 
   /** Firebase RTDB keys may not contain . $ # [ ] / or ASCII control
@@ -589,7 +587,9 @@
       const code = cellText(row[codeColIndex]); // same reading as the validator (the old `|| ''` also dropped a numeric 0)
       if (!code) return; // only fully blank spacer rows get here: validateStudentData has blocked every other row without a Code
       const rowObject = {};
-      headers.forEach((header, c) => { rowObject[header] = row[c]; });
+      // an empty, header-less column has no key to live under (Firebase rejects ""): validation already
+      // proved it holds no data, so it is simply left out
+      headers.forEach((header, c) => { if (header !== '') rowObject[header] = row[c]; });
       payload[sanitizeFirebaseKey(code)] = rowObject;
     });
 
@@ -598,10 +598,19 @@
 
     await firebaseRequest(studentsUrl, 'PUT', payload);
 
+    // From here on the student data IS live. /meta only feeds the "Last Update" tile, so if THAT write
+    // fails the upload still succeeded — reporting a failure would send the admin hunting for a
+    // problem that doesn't exist. They are told about the small gap instead.
     const lastUpdate = new Date().toISOString();
-    await firebaseRequest(metaUrl, 'PUT', { lastUpdate, studentsWritten });
+    let metaSaved = true;
+    try {
+      await firebaseRequest(metaUrl, 'PUT', { lastUpdate, studentsWritten });
+    } catch (err) {
+      metaSaved = false;
+      console.warn('CourseTrack Admin — students were uploaded, but /meta could not be saved:', err.message);
+    }
 
-    return { lastUpdate, studentsWritten };
+    return { lastUpdate, studentsWritten, metaSaved };
   }
 
   /** Reads the current /students and /meta nodes for the Statistics
@@ -689,6 +698,8 @@
   function describeIssue(issue) {
     switch (issue.type) {
       case 'missingHeader': return { key: issue.column === 'code' ? 'val.missingCodeHeader' : 'val.missingNameHeader' };
+      case 'badHeader': return { key: 'val.badHeader', vars: { columns: formatColumnList(issue.columns) } };
+      case 'headlessColumn': return { key: 'val.headlessColumn', vars: { columns: formatColumnList(issue.columns) } };
       case 'missingCode': return { key: 'val.missingCode', vars: { rows: formatRowList(issue.rows) } };
       case 'missingName': return { key: 'val.missingName', vars: { rows: formatRowList(issue.rows) } };
       case 'duplicateCode': return { key: 'val.duplicate', vars: { code: issue.code, rows: formatRowList(issue.rows) } };
@@ -762,7 +773,8 @@
     });
   }
 
-  /** `status` is a dictionary key (status.*), not display text. */
+  /** `status` is a dictionary key (status.*), not display text.
+   *  @param {{fileName?: string|null, headers?: string[], students?: number, lastUpdate?: string|null, status?: string}} info */
   function updateStatsDisplay({ fileName, headers, students, lastUpdate, status }) {
     if (fileName !== undefined) {
       if (fileName) I18N.setRaw(dom.statFile, fileName);        // real file name — never re-translated
@@ -770,7 +782,7 @@
     }
     if (students !== undefined) dom.statStudents.textContent = students;
     if (headers) {
-      dom.statWeeks.textContent = countWeeks(headers);
+      dom.statWeeks.textContent = String(countWeeks(headers));
       dom.statTasks.textContent = countPrefixed(headers, 't');
       dom.statNotes.textContent = countNotes(headers);
     }
@@ -792,7 +804,10 @@
   async function handleFile(file) {
     // Drag-and-drop calls this directly (bypassing the disabled <input>),
     // so an in-flight upload has to be guarded against here too.
-    if (dom.dropzone.classList.contains('is-uploading')) return;
+    if (dom.dropzone.classList.contains('is-uploading')) {
+      CT.toast.show({ id: 'upload-busy', kind: 'info', titleKey: 'toast.title.uploadBusy', messageKey: 'toast.msg.uploadBusy' });
+      return;
+    }
 
     resetBanners();
     if (!file) return;
@@ -829,6 +844,13 @@
         throw validationError(validation);
       }
 
+      if (validation.warnings.length) {
+        CT.toast.show({
+          id: 'duplicate-headers', kind: 'warning', titleKey: 'toast.title.duplicateHeaders', messageKey: 'toast.msg.duplicateHeaders', duration: 14000,
+          vars: { headers: validation.warnings.map((w) => `${w.header} (${w.columns.join(', ')})`).join('; ') },
+        });
+      }
+
       updateStatsDisplay({ fileName: file.name, headers, students: rows.length, status: 'status.processing' });
 
       markStepsUpTo('sync');
@@ -841,14 +863,19 @@
         fileName: file.name,
         headers,
         students: result.studentsWritten,
-        lastUpdate: result.lastUpdate,
+        lastUpdate: result.metaSaved ? result.lastUpdate : undefined,   // never show a time that wasn't saved
         status: 'status.active',
       });
 
       showSuccessBanner();
+      if (!result.metaSaved) {
+        CT.toast.show({ id: 'meta-partial', kind: 'warning', titleKey: 'toast.title.metaPartial', messageKey: 'toast.msg.metaPartial', duration: 14000 });
+      }
     } catch (err) {
       updateStatsDisplay({ status: 'status.failed' });
       showErrorBanner(err);
+      // Firebase faults (timeout, offline, refused access...) also raise a toast; "Try again" re-runs this same file.
+      CT.firebase.reportError(err, { scope: 'admin', onRetry: () => handleFile(file) });
     } finally {
       dom.fileInput.value = '';
       dom.fileInput.disabled = false;
@@ -884,12 +911,6 @@
      INITIALIZATION
      ===================================================================== */
 
-  function hideLoadingScreen() {
-    if (!dom.loadingScreen || dom.loadingScreen.style.display === 'none') return;
-    dom.loadingScreen.classList.add('is-hidden');
-    window.setTimeout(() => { dom.loadingScreen.style.display = 'none'; }, 650);
-  }
-
   async function loadInitialStats() {
     try {
       const payload = await fetchCurrentStats();
@@ -903,6 +924,7 @@
     } catch (err) {
       console.warn('CourseTrack Admin — could not load current stats:', err.message);
       updateStatsDisplay({ status: 'status.notConnected' });
+      CT.firebase.reportError(err, { scope: 'admin', onRetry: loadInitialStats });
     }
   }
 
@@ -1186,6 +1208,9 @@
         }
         if (renderLockState()) startLockTimer();    // a lockout survives a page reload
         else dom.authInput.focus();
+      }).catch((err) => {
+        console.error('CourseTrack Admin — could not check the saved session (the gate stays locked):', err);
+        dom.authInput.focus();
       });
     });
   }

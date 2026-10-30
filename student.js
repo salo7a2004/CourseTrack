@@ -14,16 +14,31 @@
   'use strict';
 
   const CONFIG = window.APP_CONFIG || {};
-  const I18N = window.I18N; // i18n.js MUST be loaded before this file (see index.html)
+  const I18N = window.I18N;           // i18n.js and common.js MUST load before this file (see index.html)
+  const CT = window.CourseTrack;
+  if (!I18N || !CT) {
+    // A missed file at deploy time must read as a message, never as a blank page.
+    const note = document.createElement('p');
+    note.className = 'noscript-note';
+    note.textContent = 'CourseTrack could not start: a required file (i18n.js or common.js) did not load. Upload it next to this page, then refresh.';
+    document.body.insertBefore(note, document.body.firstChild);
+    const loader = document.getElementById('loading-screen');
+    if (loader) loader.style.display = 'none';
+    return;
+  }
 
   /* -------------------------------------------------------------------
      0. CONSTANTS
      ------------------------------------------------------------------- */
-  const STORAGE_KEYS = { THEME: 'coursetrack_theme' };
-
-  // Longest a search is allowed to wait on Firebase before giving up
-  // with an error instead of spinning indefinitely.
+  // Longest a search may wait for Firebase — the WHOLE response, body included —
+  // before giving up with an error instead of spinning indefinitely.
   const FETCH_TIMEOUT_MS = 15000;
+
+  // How each kind of Firebase failure (see common.js) is worded for a student.
+  const STUDENT_ERROR_KEYS = {
+    timeout: 'err.timeout', offline: 'err.offline', network: 'err.network', auth: 'err.denied',
+    notfound: 'err.dbNotFound', ratelimit: 'err.rateLimited', server: 'err.serverError', client: 'err.serverError', parse: 'err.unreadable',
+  };
 
   const KEYWORDS = {
     positive: ['present', 'attended', 'yes', 'pass', 'passed', 'eligible', 'completed', 'complete', 'done', 'excellent', 'good', 'success', 'active'],
@@ -92,36 +107,16 @@
     downloadPdfBtn: document.getElementById('download-pdf-btn'),
   };
 
+  // Shared helpers (common.js): ONE implementation for both portals, so they cannot drift apart.
+  const { escapeHtml, applyLogo } = CT.ui;
+  const applyBrandColors = () => CT.ui.applyBrandColors(CONFIG);
+  const hideLoadingScreen = () => CT.ui.hideLoadingScreen(dom.loadingScreen);
+  const initTheme = CT.ui.theme.init;
+  const toggleTheme = CT.ui.theme.toggle;
+
   /* =====================================================================
      2. BRANDING (config.js drives everything — no HTML edits needed)
      ===================================================================== */
-
-  function applyBrandColors() {
-    const { colors } = CONFIG;
-    if (!colors) return;
-    const root = document.documentElement.style;
-    if (colors.primary) root.setProperty('--color-primary', colors.primary);
-    if (colors.secondary) root.setProperty('--color-accent', colors.secondary);
-  }
-
-  /** Only ever reveals a logo <img> once it has actually finished
-   *  loading; a missing path or a failed load leaves the clean text
-   *  placeholder visible instead of a broken-image icon. */
-  function applyLogo(imgEl, placeholderEl, path) {
-    if (!imgEl) return;
-    imgEl.hidden = true;
-    if (placeholderEl) placeholderEl.hidden = false;
-    if (!path) return;
-
-    imgEl.onload = () => { imgEl.hidden = false; if (placeholderEl) placeholderEl.hidden = true; };
-    imgEl.onerror = () => {
-      console.warn(`CourseTrack — logo failed to load from "${path}"; showing placeholder instead.`);
-      imgEl.hidden = true;
-      imgEl.removeAttribute('src');
-      if (placeholderEl) placeholderEl.hidden = false;
-    };
-    imgEl.src = path;
-  }
 
   function applyBranding() {
     applyBrandColors();
@@ -171,31 +166,9 @@
     dom.footerDeveloped.innerHTML = `${escapeHtml(I18N.t('footer.developedBy'))} <strong><bdi>${escapeHtml(devName)}</bdi></strong>`;
   }
 
-  function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-  }
-
   /* =====================================================================
      3. THEME — Light Mode is always the default
      ===================================================================== */
-
-  function applyTheme(theme) {
-    document.documentElement.setAttribute('data-theme', theme);
-    try { localStorage.setItem(STORAGE_KEYS.THEME, theme); } catch (err) { /* non-fatal */ }
-  }
-
-  function initTheme() {
-    let saved = null;
-    try { saved = localStorage.getItem(STORAGE_KEYS.THEME); } catch (err) { /* non-fatal */ }
-    applyTheme(saved === 'dark' ? 'dark' : 'light');
-  }
-
-  function toggleTheme() {
-    const current = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
-    applyTheme(current === 'dark' ? 'light' : 'dark');
-  }
 
   /* =====================================================================
      4. COLUMN DETECTION — never hardcodes a column name or week number
@@ -280,45 +253,10 @@
    * already works with, regardless of where data originally came from.
    */
   async function fetchCourseData() {
-    const url = getStudentsUrl();
-
-    // A `finally` block only runs once the request SETTLES — a stalled
-    // connection that never answers would otherwise leave the spinner
-    // going forever. The timeout guarantees every request settles.
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-
-    let response;
-    try {
-      response = await fetch(url, { method: 'GET', cache: 'no-store', signal: controller.signal });
-    } catch (err) {
-      window.clearTimeout(timeoutId);
-      throw I18N.error(err && err.name === 'AbortError' ? 'err.timeout' : 'err.network');
-    }
-
-    // The abort timer stays armed through the body read below too — a
-    // response whose body stalls mid-download must also settle.
-    let data;
-    try {
-      if (!response.ok) {
-        throw I18N.error(response.status === 401 || response.status === 403 ? 'err.denied' : 'err.serverError');
-      }
-      data = await response.json();
-    } catch (err) {
-      if (err && err.name === 'AbortError') {
-        throw I18N.error('err.timeout');
-      }
-      if (err instanceof SyntaxError) {
-        throw I18N.error('err.unreadable');
-      }
-      throw err;
-    } finally {
-      window.clearTimeout(timeoutId);
-    }
-
-    if (data && data.error) {
-      throw new Error(String(data.error));
-    }
+    // The shared client (common.js): the timeout covers the whole response, one transient
+    // failure (network error / 5xx / 429) is retried, and every failure arrives typed and
+    // already worded for a student through STUDENT_ERROR_KEYS.
+    const data = await CT.firebase.request(getStudentsUrl(), { timeoutMs: FETCH_TIMEOUT_MS, retries: 1, errorKeys: STUDENT_ERROR_KEYS });
 
     // Firebase returns `null` for an empty node. Records are filtered to
     // plain objects defensively, in case something non-record was ever
@@ -354,16 +292,6 @@
     const students = rows
       .filter((row) => columns.code && String(row[columns.code]).trim() !== '')
       .map((row) => ({ code: String(row[columns.code]).trim(), raw: row }));
-
-    console.group('%cCourseTrack — Firebase fetch debug', 'color:#f59e0b;font-weight:700;');
-    console.log('Detected column headers:', headers);
-    console.log('Code column:', columns.code, '| Name column:', columns.name, '| Email column:', columns.email);
-    console.log('Meeting columns:', columns.meetings);
-    console.log('Task columns:', columns.tasks);
-    console.log('Notes columns:', columns.notes);
-    console.log('Final result columns:', columns.final);
-    console.log(`Parsed ${students.length} student record(s).`);
-    console.groupEnd();
 
     return { columns, students };
   }
@@ -1412,20 +1340,20 @@
       const student = students.find((s) => s.code.toLowerCase() === normalized) || null;
 
       if (!student) {
-        console.warn('CourseTrack — no student matched for code:', code);
         I18N.setText(dom.errorTitle, 'err.notFound.title');
         I18N.setText(dom.errorMessage, 'err.notFound.msg');
         setViewState({ error: true });
         return;
       }
 
-      console.log('%cCourseTrack — matched student object:', 'color:#16a34a;font-weight:700;', student);
       renderStudent(columns, student, students);   // `students` = the whole cohort, for the Top Performer benchmark
     } catch (err) {
-      console.error('CourseTrack — search error:', err);
+      console.error('CourseTrack — search failed:', err);
       I18N.setText(dom.errorTitle, 'err.generic.title');
       I18N.setErrorText(dom.errorMessage, err, 'err.generic.msg');
       setViewState({ error: true });
+      // Timeouts, being offline, refused access... also raise a toast (with "Try again" where it can help).
+      CT.firebase.reportError(err, { scope: 'student', onRetry: () => dom.searchBtn.click() });
     } finally {
       // Loading state is hidden immediately and unconditionally, no
       // matter which branch above ran — this is what fixes the
@@ -1636,12 +1564,6 @@
   /* =====================================================================
      10. INITIALIZATION
      ===================================================================== */
-
-  function hideLoadingScreen() {
-    if (!dom.loadingScreen || dom.loadingScreen.style.display === 'none') return;
-    dom.loadingScreen.classList.add('is-hidden');
-    window.setTimeout(() => { dom.loadingScreen.style.display = 'none'; }, 650);
-  }
 
   function init() {
     window.setTimeout(hideLoadingScreen, 700);

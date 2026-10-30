@@ -3,20 +3,24 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Apply the saved language/direction before first paint (no LTR flash on reload). i18n.js takes over once loaded. -->
-  <script>try{if(localStorage.getItem('coursetrack_lang')==='ar'){var r=document.documentElement;r.lang='ar';r.dir='rtl';}}catch(e){}</script>
+  <script>(function(){try{if(localStorage.getItem('coursetrack_lang')==='ar'){var r=document.documentElement;r.lang='ar';r.dir='rtl';}}catch(e){}})();</script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title data-i18n="page.studentTitle">CourseTrack | Student Portal</title>
   <meta name="description" content="Search your student code to view your weekly results and final course result." data-i18n-content="page.studentDesc" />
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&family=Inter:wght@400;500;600;700;800&family=Cairo:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
   <link rel="stylesheet" href="style.css" />
+  <noscript><style>#loading-screen { display: none !important; }</style></noscript>
   <!-- Note: SheetJS is intentionally NOT loaded here — the Student Portal
        never touches a raw .xlsx file, only the live Firebase data. -->
 </head>
 <body>
+
+  <noscript><p class="noscript-note">CourseTrack needs JavaScript to run. Please enable it in your browser settings and reload this page.</p></noscript>
 
   <div id="loading-screen" class="loading-screen" aria-live="polite">
     <div class="loader-orbit">
@@ -223,6 +227,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
   <script src="config.js"></script>
   <script src="i18n.js"></script>
+  <script src="common.js"></script>
   <script src="student.js"></script>
 </body>
 </html>

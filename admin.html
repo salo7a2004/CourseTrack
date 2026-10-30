@@ -3,19 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <!-- Apply the saved language/direction before first paint (no LTR flash on reload). i18n.js takes over once loaded. -->
-  <script>try{if(localStorage.getItem('coursetrack_lang')==='ar'){var r=document.documentElement;r.lang='ar';r.dir='rtl';}}catch(e){}</script>
+  <script>(function(){try{if(localStorage.getItem('coursetrack_lang')==='ar'){var r=document.documentElement;r.lang='ar';r.dir='rtl';}}catch(e){}})();</script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title data-i18n="page.adminTitle">CourseTrack | Admin Dashboard</title>
   <meta name="robots" content="noindex, nofollow" />
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&family=Inter:wght@400;500;600;700;800&family=Cairo:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
 
   <!-- SheetJS: only the Admin page ever reads a raw .xlsx file -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
   <link rel="stylesheet" href="style.css" />
+  <noscript><style>#loading-screen { display: none !important; }</style></noscript>
 </head>
 <body class="auth-locked">
 
@@ -183,6 +185,7 @@
 
   <script src="config.js"></script>
   <script src="i18n.js"></script>
+  <script src="common.js"></script>
   <script src="admin.js"></script>
 </body>
 </html>
