@@ -1044,3 +1044,8 @@ body.auth-locked .auth-gate {
   background: var(--bg-base-2); border: 1px solid var(--glass-border); color: var(--text-strong);
   font-family: var(--font-body); font-size: 0.95rem; line-height: 1.5; text-align: center;
 }
+
+/* The same report box, used for a SUCCESSFUL merge summary (admin.html): green instead of red. */
+.validation-report--ok { background: rgba(22, 163, 74, 0.07); border-color: rgba(22, 163, 74, 0.28); }
+.validation-report--ok .validation-report__list li::marker { color: var(--success); }
+.validation-report--ok .validation-issue bdi { background: rgba(22, 163, 74, 0.12); }

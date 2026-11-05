@@ -416,8 +416,10 @@
     const timeoutMs = timeoutFor(o.timeoutMs, bytes);
     const target = o.silent ? withQuery(url, { print: 'silent' }) : url;   // a write's answer would just echo the whole dataset back
 
-    // GET and PUT are idempotent, so repeating them after a transient failure is safe.
-    const maxRetries = method === 'GET' || method === 'PUT' ? o.retries : 0;
+    // GET and PUT are idempotent, so repeating them after a transient failure is safe. So is PATCH as this
+    // project uses it: every value is written ABSOLUTELY ("A1/Design 1": 10), never incremented, so applying
+    // the same update twice leaves exactly the same data.
+    const maxRetries = method === 'GET' || method === 'PUT' || method === 'PATCH' ? o.retries : 0;
     for (let attempt = 1; ; attempt += 1) {
       try {
         return await attemptOnce(target, method, bodyText, timeoutMs);

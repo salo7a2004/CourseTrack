@@ -35,6 +35,15 @@
   // Characters Firebase forbids in a key. A column header becomes a key in every stored record.
   const UNSAFE_KEY_CHARS = /[.#$[\]\/\u0000-\u001f\u007f]/;
 
+  // How an upload is merged into the database (see buildMergePlan / commitMerge).
+  const MERGE_RULES = {
+    blankCellOverwrites: false,   // false: a blank cell leaves the stored value alone (safest). true: it clears it.
+    fallbackBatchSize: 25,        // only used if the database refuses the single multi-path update (see commitMerge)
+  };
+  // Shared by every course (like the Code and Name columns), so no course "owns" them.
+  const IDENTITY_COLUMN_PATTERN = /e-?mail|بريد/i;
+  const GENERIC_SHEET_NAME = /^(sheet|worksheet|ورقة|صفحة)\s*\d*$/i;
+
   // Dictionary KEYS (see i18n.js) — not display strings — so every error
   // is shown in the current language and re-translates if the language
   // is switched while it is on screen.
@@ -277,7 +286,7 @@
           // past the header row's last column (or a short row). Pad/
           // truncate every row to exactly headers.length cells so that
           // zipping each row into a { header: value } record (see
-          // pushToFirebase) always yields the same keys for every
+          // the merge plan) always yields the same keys for every
           // student, regardless of what the source file looked like.
           const dataRows = rows.slice(headerRowIndex + 1).map((row) => {
             const normalized = row.slice(0, headers.length);
@@ -304,7 +313,7 @@
      ---------------------------------------------------------------------
      validateStudentData() is a pure function (no DOM, no network) that
      returns a structured result. handleFile() turns a failed result into a
-     blocking error banner + report, and pushToFirebase() re-checks as a last
+     blocking error banner + report, and prepareMerge() re-checks as a last
      line of defence, so no code path can reach the Firebase PUT with data
      that failed these rules:
 
@@ -544,9 +553,10 @@
   /** One call to the shared Firebase client. GET and PUT are idempotent, so a transient
    *  failure is retried once; writes use print=silent so Firebase doesn't echo the whole
    *  dataset back; the admin secret (if any) is appended by appendAuthParam and is never logged. */
-  function firebaseRequest(url, method, body) {
-    return CT.firebase.request(appendAuthParam(url), {
-      method, body, timeoutMs: FIREBASE_TIMEOUT_MS, retries: 1, silent: method === 'PUT', errorKeys: ADMIN_ERROR_KEYS,
+  function firebaseRequest(url, method, body, query) {
+    const target = appendAuthParam(url);
+    return CT.firebase.request(query ? CT.firebase.withQuery(target, query) : target, {
+      method, body, timeoutMs: FIREBASE_TIMEOUT_MS, retries: 1, silent: method === 'PUT' || method === 'PATCH', errorKeys: ADMIN_ERROR_KEYS,
     });
   }
 
@@ -557,61 +567,209 @@
     return cleaned || `row_${Math.random().toString(36).slice(2, 10)}`;
   }
 
+  /* =====================================================================
+     SCOPED PARTIAL UPDATES — one course/track at a time, never the whole dataset
+     ---------------------------------------------------------------------
+     An upload is the work of ONE instructor / course (Design, HVAC...). It
+     must change exactly the columns that are IN the file, for exactly the
+     students that are in the file — and nothing else, ever:
+
+       • columns in the file   -> overwritten with the new values (corrections welcome)
+       • every other column    -> untouched (other courses, their attendance, their grades)
+       • every other student   -> untouched
+       • students not yet in the database -> added
+
+     How that is achieved (and why it is not "fetch the record, merge, write it back"):
+     each value is written to its OWN path in ONE atomic multi-path PATCH —
+     {"A1/Design 1": 10, "A1/Design 2": 7, ...}. Nothing is read-modify-written,
+     so two instructors uploading at the same moment cannot overwrite each other
+     (a fetch-merge-PUT would lose whichever write landed first). The only read
+     is a keys-only listing, used to match incoming codes to existing students
+     case-insensitively — exactly how the Student Portal matches them.
+
+     Rules worth knowing (MERGE_RULES):
+       • a blank cell leaves the stored value alone (a half-filled sheet must not erase grades);
+       • the Code column is the join key: an existing student's is never rewritten;
+       • each course's columns are recorded in /meta/tracks, so a file that would
+         overwrite ANOTHER course's columns asks for confirmation first.
+     ===================================================================== */
+
+  /** The course/track an upload belongs to: the worksheet's name or — when it only has a default
+   *  name such as "Sheet1" — the file name without its extension. */
+  function deriveCourseName(sheetName, fileName) {
+    const sheet = String(sheetName || '').trim();
+    if (sheet && !GENERIC_SHEET_NAME.test(sheet)) return sheet;
+    return String(fileName || '').replace(/\.[^.]+$/, '').trim() || sheet || 'Course';
+  }
+
   /**
-   * Replaces the Firebase `/students` node wholesale with the freshly
-   * parsed workbook — a full overwrite, exactly matching the project's
-   * established "an Admin upload replaces everything" behavior.
-   *
-   * Written as an OBJECT keyed by each student's (sanitized) code, not
-   * a plain array: Firebase's own documentation specifically recommends
-   * against storing arrays in the Realtime Database (they're internally
-   * re-encoded in ways that get awkward with sparse/non-sequential
-   * data). Keying by code also means re-uploading the same student
-   * cleanly overwrites their one record instead of ever appending a
-   * duplicate.
+   * PURE (no network): turns the parsed sheet into database writes.
+   * @param {{headers: string[], rows: any[][], existingKeys: string[]}} input  existingKeys = the keys already under /students
+   * @returns {{updates: object, byStudent: Map, columns: string[], counts: object}}
+   *   updates   { "<studentKey>/<column>": value }  — the single multi-path PATCH body
+   *   byStudent Map(studentKey -> { column: value }) — the same writes, grouped (used by the batched fallback)
+   *   columns   the course's own columns (everything except Code, Name and e-mail)
    */
-  async function pushToFirebase(headers, rows, headerRowIndex) {
-    // LAST LINE OF DEFENCE. handleFile() has already validated and shown the
-    // report; this makes it impossible for ANY caller to reach the PUT below
-    // with data that failed validation.
+  function buildMergePlan({ headers, rows, existingKeys }) {
+    const codeCol = headers.findIndex((h) => /code/i.test(String(h).trim()));
+    const nameCol = headers.findIndex((h, c) => c !== codeCol && NAME_HEADER_PATTERN.test(String(h).trim()));
+
+    const keyByLower = new Map();           // the Student Portal matches codes case-insensitively, so merging must too
+    existingKeys.forEach((key) => { if (!keyByLower.has(key.toLowerCase())) keyByLower.set(key.toLowerCase(), key); });
+
+    const columns = [];
+    headers.forEach((header, c) => {
+      if (header === '' || c === codeCol || c === nameCol || IDENTITY_COLUMN_PATTERN.test(header) || columns.indexOf(header) !== -1) return;
+      columns.push(header);
+    });
+
+    const updates = {};
+    const byStudent = new Map();
+    const counts = { students: 0, created: 0, matched: 0, fields: 0, blanksIgnored: 0 };
+
+    rows.forEach((row) => {
+      const code = cellText(row[codeCol]);
+      if (!code) return;                    // only fully blank spacer rows get here: validation blocked every other row without a Code
+      const wanted = sanitizeFirebaseKey(code);
+      const known = keyByLower.get(wanted.toLowerCase());
+      const key = known || wanted;
+      const isNew = !known;
+      keyByLower.set(wanted.toLowerCase(), key);
+      counts.students += 1;
+      if (isNew) counts.created += 1; else counts.matched += 1;
+
+      const fields = {};
+      headers.forEach((header, c) => {
+        if (header === '') return;          // an empty, header-less column (validation proved it holds no data)
+        if (c === codeCol && !isNew) return; // the join key of an existing student is never rewritten
+        const raw = row[c];
+        const blank = cellText(raw) === '' || (typeof raw === 'number' && !Number.isFinite(raw));
+        let value = raw;
+        if (blank) {
+          if (!MERGE_RULES.blankCellOverwrites) { counts.blanksIgnored += 1; return; }
+          if (isNew) return;                // nothing stored yet, nothing to clear
+          value = null;                     // Firebase deletes a path written as null
+        }
+        fields[header] = value;
+      });
+      byStudent.set(key, fields);
+      Object.keys(fields).forEach((header) => { updates[`${key}/${header}`] = fields[header]; counts.fields += 1; });
+    });
+
+    return { updates, byStudent, columns, counts };
+  }
+
+  /** The record in /meta/tracks for this course; an existing one is reused even if its capitalisation differs. */
+  function trackRecordKey(courseName, tracks) {
+    const wanted = sanitizeFirebaseKey(courseName);
+    return Object.keys(tracks || {}).find((key) => key.toLowerCase() === wanted.toLowerCase()) || wanted;
+  }
+
+  function ownedColumns(track) {
+    const list = track && track.columns;
+    if (!list) return [];
+    return Array.isArray(list) ? list.filter(Boolean) : Object.keys(list).map((k) => list[k]);   // Firebase may hand a list back as an object
+  }
+
+  /** Columns in this file that were last written by a DIFFERENT course (the same course re-uploading is a correction, not a conflict). */
+  function findOverlaps(columns, tracks, ownKey) {
+    const overlaps = [];
+    Object.keys(tracks || {}).forEach((key) => {
+      if (key === ownKey) return;
+      const owned = ownedColumns(tracks[key]);
+      columns.forEach((column) => {
+        if (owned.indexOf(column) !== -1) overlaps.push({ column, courseKey: key, course: (tracks[key] && tracks[key].name) || key });
+      });
+    });
+    return overlaps;
+  }
+
+  function describeOverlaps(overlaps) {
+    const byCourse = new Map();
+    overlaps.forEach((o) => { if (!byCourse.has(o.course)) byCourse.set(o.course, []); byCourse.get(o.course).push(o.column); });
+    return Array.from(byCourse.entries()).map(([course, cols]) => `${cols.join(', ')} ("${course}")`).join('; ');
+  }
+
+  function cancelledError() {
+    const err = I18N.error('err.uploadCancelled');
+    err.cancelled = true;
+    return err;
+  }
+
+  /** Reads what is needed to merge safely (nothing is written yet) and builds the plan. */
+  async function prepareMerge({ headers, rows, headerRowIndex, courseName, fileName }) {
+    // Last line of defence, as before: nothing that failed validation may reach the database.
     const validation = validateStudentData({ headers, rows, headerRowIndex });
     if (!validation.ok) throw validationError(validation);
 
-    const { studentsUrl, metaUrl } = getFirebaseUrls();
+    const urls = getFirebaseUrls();
+    const tracksUrl = urls.metaUrl.replace(/meta\.json$/, 'meta/tracks.json');
+    const [shallow, tracks] = await Promise.all([
+      firebaseRequest(urls.studentsUrl, 'GET', undefined, { shallow: 'true' }),   // keys only: a few bytes per student
+      firebaseRequest(tracksUrl, 'GET').catch((err) => {                           // advisory only: never blocks an upload
+        console.warn('CourseTrack Admin — could not read the course list (overlap check skipped):', err.message);
+        return null;
+      }),
+    ]);
 
-    const codeColIndex = headers.findIndex((h) => /code/i.test(String(h).trim()));
-    if (codeColIndex === -1) throw I18N.error(ERRORS.CODE_NOT_FOUND);
+    const existingKeys = shallow && typeof shallow === 'object' ? Object.keys(shallow) : [];
+    const plan = buildMergePlan({ headers, rows, existingKeys });
+    const knownTracks = tracks && typeof tracks === 'object' ? tracks : {};
+    const trackKey = trackRecordKey(courseName, knownTracks);
+    return { plan, urls, tracksUrl, courseName, fileName, trackKey, tracks: knownTracks, overlaps: findOverlaps(plan.columns, knownTracks, trackKey), existingCount: existingKeys.length };
+  }
 
-    const payload = {};
-    rows.forEach((row) => {
-      const code = cellText(row[codeColIndex]); // same reading as the validator (the old `|| ''` also dropped a numeric 0)
-      if (!code) return; // only fully blank spacer rows get here: validateStudentData has blocked every other row without a Code
-      const rowObject = {};
-      // an empty, header-less column has no key to live under (Firebase rejects ""): validation already
-      // proved it holds no data, so it is simply left out
-      headers.forEach((header, c) => { if (header !== '') rowObject[header] = row[c]; });
-      payload[sanitizeFirebaseKey(code)] = rowObject;
-    });
+  /** If the database refuses path-style keys, update student by student: no longer one atomic step,
+   *  but every request still touches only its own student's listed fields. */
+  async function patchStudentsInBatches(studentsUrl, byStudent) {
+    const entries = Array.from(byStudent.entries());
+    for (let i = 0; i < entries.length; i += MERGE_RULES.fallbackBatchSize) {
+      const batch = entries.slice(i, i + MERGE_RULES.fallbackBatchSize);
+      await Promise.all(batch.map(([key, fields]) => firebaseRequest(studentsUrl.replace(/students\.json$/, `students/${encodeURIComponent(key)}.json`), 'PATCH', fields)));
+    }
+  }
 
-    const studentsWritten = Object.keys(payload).length;
-    if (!studentsWritten) throw I18N.error(ERRORS.CODE_NOT_FOUND);
+  /** Writes the plan. The student data goes first (and is the only part that can fail the upload);
+   *  the course record + "last update" are advisory. */
+  async function commitMerge(prepared) {
+    const { plan, urls, tracksUrl, courseName, fileName, trackKey, tracks, overlaps } = prepared;
+    let batched = false;
 
-    await firebaseRequest(studentsUrl, 'PUT', payload);
-
-    // From here on the student data IS live. /meta only feeds the "Last Update" tile, so if THAT write
-    // fails the upload still succeeded — reporting a failure would send the admin hunting for a
-    // problem that doesn't exist. They are told about the small gap instead.
-    const lastUpdate = new Date().toISOString();
-    let metaSaved = true;
-    try {
-      await firebaseRequest(metaUrl, 'PUT', { lastUpdate, studentsWritten });
-    } catch (err) {
-      metaSaved = false;
-      console.warn('CourseTrack Admin — students were uploaded, but /meta could not be saved:', err.message);
+    if (Object.keys(plan.updates).length) {
+      try {
+        await firebaseRequest(urls.studentsUrl, 'PATCH', plan.updates);   // ONE atomic update: all of it or none of it
+      } catch (err) {
+        if (!(err instanceof CT.firebase.FirebaseError) || err.kind !== 'client' || err.status !== 400) throw err;
+        batched = true;
+        await patchStudentsInBatches(urls.studentsUrl, plan.byStudent);
+      }
     }
 
-    return { lastUpdate, studentsWritten, metaSaved };
+    // From here on the student data IS live. /meta only feeds the "Last Update" tile and the course list, so if
+    // THAT write fails the upload still succeeded — the admin is told about the small gap instead.
+    const lastUpdate = new Date().toISOString();
+    const metaUpdate = { lastUpdate, studentsWritten: plan.counts.students };
+    // A course keeps ownership of every column it has EVER written: a partial re-upload (only "Design 1")
+    // must not make the system forget that "Design 2" is Design's too.
+    const previous = ownedColumns(tracks[trackKey]);
+    const ownedNow = previous.concat(plan.columns.filter((column) => previous.indexOf(column) === -1));
+    metaUpdate[`tracks/${trackKey}`] = { name: courseName, columns: ownedNow, students: plan.counts.students, fileName, updatedAt: lastUpdate };
+    const taken = new Set(overlaps.map((o) => o.column));
+    new Set(overlaps.map((o) => o.courseKey)).forEach((courseKey) => {       // columns this file just took over are no longer the other course's
+      const remaining = ownedColumns(tracks[courseKey]).filter((column) => !taken.has(column));
+      metaUpdate[`tracks/${courseKey}/columns`] = remaining.length ? remaining : null;
+    });
+    let metaSaved = true;
+    try {
+      await firebaseRequest(urls.metaUrl, 'PATCH', metaUpdate);
+    } catch (err) {
+      metaSaved = false;
+      console.warn('CourseTrack Admin — the student data was saved, but /meta could not be updated:', err.message);
+    }
+
+    return { lastUpdate, metaSaved, batched, counts: plan.counts, columns: plan.columns, totalStudents: prepared.existingCount + plan.counts.created, tracksUrl };
   }
+
 
   /** Reads the current /students and /meta nodes for the Statistics
    *  panel shown when the Admin Dashboard first loads. */
@@ -652,9 +810,9 @@
     hideValidationReport();
   }
 
-  function showSuccessBanner() {
+  function showSuccessBanner(key, vars) {
     resetBanners();
-    I18N.setText(dom.uploadSuccessText, 'upload.success');
+    I18N.setText(dom.uploadSuccessText, key || 'upload.success', vars);
     dom.uploadSuccess.hidden = false;
   }
 
@@ -683,7 +841,29 @@
   function hideValidationReport() {
     if (!validationReportEl) return;
     validationReportEl.hidden = true;
+    validationReportEl.classList.remove('validation-report--ok');
     validationReportEl.textContent = '';
+  }
+
+  /** The success summary: what was written, for whom, and what was deliberately left alone. */
+  function renderMergeReport(result, prepared) {
+    const report = getValidationReport();
+    report.textContent = '';
+    report.classList.add('validation-report--ok');
+    const list = document.createElement('ul');
+    list.className = 'validation-report__list';
+    const add = (key, vars) => {
+      const item = document.createElement('li');
+      setHtmlText(item, key, vars);
+      list.appendChild(item);
+    };
+    add('merge.columns', { n: result.columns.length, columns: result.columns.length ? formatColumnList(result.columns) : '—' });
+    add('merge.students', { matched: result.counts.matched, created: result.counts.created });
+    if (result.counts.blanksIgnored) add('merge.blanks', { n: result.counts.blanksIgnored });
+    if (prepared.overlaps.length) add('merge.overwrote', { details: describeOverlaps(prepared.overlaps) });
+    if (result.batched) add('merge.batched');
+    report.appendChild(list);
+    report.hidden = false;
   }
 
   /** Like I18N.setText, but for dictionary entries that contain markup
@@ -854,7 +1034,12 @@
       updateStatsDisplay({ fileName: file.name, headers, students: rows.length, status: 'status.processing' });
 
       markStepsUpTo('sync');
-      const result = await pushToFirebase(headers, rows, headerRowIndex);
+      const courseName = deriveCourseName(sheetName, file.name);
+      const prepared = await prepareMerge({ headers, rows, headerRowIndex, courseName, fileName: file.name });
+      if (prepared.overlaps.length && !window.confirm(I18N.t('merge.confirmOverlap', { course: courseName, details: describeOverlaps(prepared.overlaps) }))) {
+        throw cancelledError();          // nothing has been written yet
+      }
+      const result = await commitMerge(prepared);
 
       markStepsUpTo('done');
       setStep('done', 'done');
@@ -862,16 +1047,23 @@
       updateStatsDisplay({
         fileName: file.name,
         headers,
-        students: result.studentsWritten,
+        students: result.totalStudents,
         lastUpdate: result.metaSaved ? result.lastUpdate : undefined,   // never show a time that wasn't saved
         status: 'status.active',
       });
 
-      showSuccessBanner();
+      showSuccessBanner('upload.merged', { course: courseName, count: result.counts.students });
+      renderMergeReport(result, prepared);
+      await loadInitialStats();   // the tiles describe the WHOLE database (every course), not just this file
       if (!result.metaSaved) {
         CT.toast.show({ id: 'meta-partial', kind: 'warning', titleKey: 'toast.title.metaPartial', messageKey: 'toast.msg.metaPartial', duration: 14000 });
       }
     } catch (err) {
+      if (err && err.cancelled) {
+        showErrorBanner(err);        // nothing was written; the tiles were pointed at this file, so restore them from the database
+        await loadInitialStats();
+        return;
+      }
       updateStatsDisplay({ status: 'status.failed' });
       showErrorBanner(err);
       // Firebase faults (timeout, offline, refused access...) also raise a toast; "Try again" re-runs this same file.
