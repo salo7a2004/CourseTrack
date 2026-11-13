@@ -419,7 +419,8 @@
     // GET and PUT are idempotent, so repeating them after a transient failure is safe. So is PATCH as this
     // project uses it: every value is written ABSOLUTELY ("A1/Design 1": 10), never incremented, so applying
     // the same update twice leaves exactly the same data.
-    const maxRetries = method === 'GET' || method === 'PUT' || method === 'PATCH' ? o.retries : 0;
+    // DELETE is idempotent too: removing something that is already gone leaves exactly the same data.
+    const maxRetries = method === 'GET' || method === 'PUT' || method === 'PATCH' || method === 'DELETE' ? o.retries : 0;
     for (let attempt = 1; ; attempt += 1) {
       try {
         return await attemptOnce(target, method, bodyText, timeoutMs);

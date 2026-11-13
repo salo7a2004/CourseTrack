@@ -1049,3 +1049,43 @@ body.auth-locked .auth-gate {
 .validation-report--ok { background: rgba(22, 163, 74, 0.07); border-color: rgba(22, 163, 74, 0.28); }
 .validation-report--ok .validation-report__list li::marker { color: var(--success); }
 .validation-report--ok .validation-issue bdi { background: rgba(22, 163, 74, 0.12); }
+
+/* =======================================================================
+   28. Manage Uploaded Data — delete a course / a student / reset (admin.html)
+   ======================================================================= */
+.manage-actions-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
+.manage-danger-link { color: var(--danger); }
+.btn--danger {
+  background: linear-gradient(135deg, #e11d48, #be123c); color: #fff;
+  box-shadow: 0 8px 20px rgba(225, 29, 72, 0.28);
+}
+.btn--danger:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; filter: none; transform: none; }
+
+dialog.manage-dialog { border: 0; padding: 0; background: transparent; max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); overflow: visible; color: inherit; }
+.manage-dialog::backdrop { background: rgba(15, 23, 42, 0.58); backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px); }
+.manage-dialog__card {
+  width: min(540px, calc(100vw - 24px)); padding: 26px 26px 22px;
+  display: flex; flex-direction: column; gap: 12px; text-align: start;
+  background: var(--bg-base-2); border: 1px solid var(--glass-border); box-shadow: var(--glass-shadow-hover);
+}
+.manage-dialog__title { font-family: var(--font-display); font-size: 1.25rem; color: var(--text-strong); }
+.manage-dialog__desc { font-size: 0.9rem; line-height: 1.5; color: var(--text-muted); }
+.manage-status { font-size: 0.88rem; font-weight: 600; color: var(--text-muted); }
+.manage-panel { display: flex; flex-direction: column; gap: 10px; }
+.manage-panel[hidden] { display: none; }
+.manage-label { font-size: 0.78rem; font-weight: 700; letter-spacing: 0.04em; color: var(--text-muted); }
+.manage-row { display: flex; gap: 10px; align-items: stretch; }
+.manage-row .manage-input { flex: 1 1 auto; min-width: 0; }
+.manage-input {
+  width: 100%; padding: 12px 14px; border-radius: var(--radius-md); font-size: 1rem; outline: none;
+  border: 1.5px solid rgba(47, 84, 235, 0.2); background: var(--glass-bg-strong); color: var(--text-strong);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.manage-input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 4px rgba(47, 84, 235, 0.14); }
+.manage-input:disabled { opacity: 0.6; cursor: not-allowed; }
+.manage-preview { padding: 12px 14px; border-radius: var(--radius-md); font-size: 0.88rem; line-height: 1.5; color: var(--text-strong); background: rgba(47, 84, 235, 0.07); }
+.manage-preview--muted { color: var(--text-muted); background: rgba(124, 138, 166, 0.1); }
+.manage-preview bdi { font-weight: 700; }
+.manage-warning { padding: 12px 14px; border-radius: var(--radius-md); font-size: 0.9rem; font-weight: 600; line-height: 1.5; color: var(--danger); background: rgba(225, 29, 72, 0.08); border: 1px solid rgba(225, 29, 72, 0.22); }
+.manage-dialog__actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+@media (max-width: 520px) { .manage-dialog__card { padding: 20px 18px 18px; } .manage-row { flex-direction: column; } }
