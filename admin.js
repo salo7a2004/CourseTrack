@@ -556,7 +556,7 @@
   function firebaseRequest(url, method, body, query) {
     const target = appendAuthParam(url);
     return CT.firebase.request(query ? CT.firebase.withQuery(target, query) : target, {
-      method, body, timeoutMs: FIREBASE_TIMEOUT_MS, retries: 1, silent: method === 'PUT' || method === 'PATCH', errorKeys: ADMIN_ERROR_KEYS,
+      method, body, timeoutMs: FIREBASE_TIMEOUT_MS, retries: 1, silent: method === 'PUT' || method === 'PATCH' || method === 'DELETE', errorKeys: ADMIN_ERROR_KEYS,
     });
   }
 
@@ -1407,6 +1407,341 @@
     });
   }
 
+  /* =====================================================================
+     DATA REMOVAL — delete one course, delete one student, or reset everything
+     ---------------------------------------------------------------------
+     Every deletion is aimed at exactly the scope the admin chose, and
+     nothing happens before an explicit confirmation:
+
+       course   removes that course's recorded columns from every student,
+                in ONE atomic multi-path PATCH of nulls (Firebase deletes a
+                path written as null), then its record from /meta/tracks.
+                A thousand students x ten columns as individual DELETEs
+                could stop half-way and leave half a course; this cannot.
+                Columns another course also claims are never touched, and
+                every other course, the students and "Last Update" stay.
+       student  DELETE /students/<key>  — exactly one record.
+       reset    DELETE /students, then DELETE /meta — only CourseTrack's own
+                two nodes, and only after typing RESET.
+
+     The plan is rebuilt from FRESH reads at the moment of confirmation, not
+     from what the dialog showed: if another instructor uploads while it is
+     open, their rows are included, so a course is never left half-deleted.
+     ===================================================================== */
+
+  const RESET_PHRASE = 'RESET';
+  const manage = { mode: null, busy: false, token: 0, catalogReady: false, tracks: {}, keys: [], student: null };
+
+  function databaseUrls() {
+    const urls = getFirebaseUrls();
+    return {
+      studentsUrl: urls.studentsUrl,
+      metaUrl: urls.metaUrl,
+      tracksUrl: urls.metaUrl.replace(/meta\.json$/, 'meta/tracks.json'),
+      studentUrl: (key) => urls.studentsUrl.replace(/students\.json$/, `students/${encodeURIComponent(key)}.json`),
+    };
+  }
+
+  /** The course list and the student keys (keys only: a few bytes per student). Nothing is changed. */
+  async function readCatalog() {
+    const u = databaseUrls();
+    const [tracks, shallow] = await Promise.all([
+      firebaseRequest(u.tracksUrl, 'GET'),
+      firebaseRequest(u.studentsUrl, 'GET', undefined, { shallow: 'true' }),
+    ]);
+    return {
+      tracks: tracks && typeof tracks === 'object' ? tracks : {},
+      keys: shallow && typeof shallow === 'object' ? Object.keys(shallow) : [],
+    };
+  }
+
+  /**
+   * PURE (no network): what deleting one course would remove.
+   * @returns {null | {name: string, columns: string[], shared: string[], updates: object, byStudent: Map, students: number}}
+   *   null when the course no longer exists. `updates` is the multi-path PATCH body ({"<student>/<column>": null}).
+   */
+  function planCourseRemoval({ courseKey, tracks, studentKeys }) {
+    const track = tracks && tracks[courseKey];
+    if (!track || typeof track !== 'object') return null;
+
+    const claimedElsewhere = new Set();
+    Object.keys(tracks).forEach((key) => { if (key !== courseKey) ownedColumns(tracks[key]).forEach((column) => claimedElsewhere.add(column)); });
+
+    // A column is removed only if it is this course's alone and is a safe key (a tampered "../x" can never aim the delete elsewhere).
+    const mine = ownedColumns(track).filter((column) => typeof column === 'string' && column !== '' && !UNSAFE_KEY_CHARS.test(column));
+    const columns = mine.filter((column) => !claimedElsewhere.has(column));
+    const shared = mine.filter((column) => claimedElsewhere.has(column));
+
+    const updates = {};
+    const byStudent = new Map();
+    studentKeys.forEach((key) => {
+      const fields = {};
+      columns.forEach((column) => { updates[`${key}/${column}`] = null; fields[column] = null; });
+      byStudent.set(key, fields);
+    });
+    return { name: track.name || courseKey, columns, shared, updates, byStudent, students: studentKeys.length };
+  }
+
+  /** The stored key of the student with this code (matched case-insensitively, like the Student Portal), or null. */
+  function findStudentKey(code, studentKeys) {
+    const trimmed = cellText(code);
+    if (!trimmed) return null;
+    const wanted = sanitizeFirebaseKey(trimmed).toLowerCase();
+    return studentKeys.find((key) => key.toLowerCase() === wanted) || null;
+  }
+
+  async function removeCourse(courseKey) {
+    const u = databaseUrls();
+    const { tracks, keys } = await readCatalog();             // fresh: someone may have uploaded since the dialog opened
+    const plan = planCourseRemoval({ courseKey, tracks, studentKeys: keys });
+    if (!plan) throw I18N.error('manage.course.gone');
+
+    if (Object.keys(plan.updates).length) {
+      try {
+        await firebaseRequest(u.studentsUrl, 'PATCH', plan.updates);       // all of it or none of it
+      } catch (err) {
+        if (!(err instanceof CT.firebase.FirebaseError) || err.kind !== 'client' || err.status !== 400) throw err;
+        await patchStudentsInBatches(u.studentsUrl, plan.byStudent);       // path-style keys refused: student by student, same nulls
+      }
+    }
+    // The course's record goes only AFTER its data is gone, so a failure here leaves a harmless leftover entry, never orphaned grades.
+    let recordRemoved = true;
+    try {
+      await firebaseRequest(u.metaUrl, 'PATCH', { [`tracks/${courseKey}`]: null });
+    } catch (err) {
+      recordRemoved = false;
+      console.warn('CourseTrack Admin — the course data was removed, but its record could not be:', err.message);
+    }
+    return { plan, recordRemoved };
+  }
+
+  async function removeStudent(key) {
+    await firebaseRequest(databaseUrls().studentUrl(key), 'DELETE');
+  }
+
+  async function resetAll() {
+    const u = databaseUrls();
+    await firebaseRequest(u.studentsUrl, 'DELETE');
+    let metaCleared = true;
+    try {
+      await firebaseRequest(u.metaUrl, 'DELETE');
+    } catch (err) {
+      metaCleared = false;
+      console.warn('CourseTrack Admin — the students were erased, but /meta could not be cleared:', err.message);
+    }
+    return { metaCleared };
+  }
+
+  function initManage() {
+    const q = (id) => document.getElementById(id);
+    const m = {
+      dialog: q('manage-dialog'), title: q('manage-title'), desc: q('manage-desc'), status: q('manage-status'), error: q('manage-error'),
+      cancel: q('manage-cancel'), confirm: q('manage-confirm'), confirmLabel: q('manage-confirm-label'),
+      panels: { course: q('manage-panel-course'), student: q('manage-panel-student'), reset: q('manage-panel-reset') },
+      course: q('manage-course'), coursePreview: q('manage-course-preview'), courseShared: q('manage-course-shared'),
+      studentCode: q('manage-student-code'), lookup: q('manage-student-lookup'), studentFound: q('manage-student-found'),
+      resetSummary: q('manage-reset-summary'), resetLabel: q('manage-reset-label'), resetPhrase: q('manage-reset-phrase'),
+    };
+    if (!m.dialog) return;
+
+    const TEXT = {
+      course: { title: 'manage.course.title', desc: 'manage.course.desc', confirm: 'manage.course.confirm' },
+      student: { title: 'manage.student.title', desc: 'manage.student.desc', confirm: 'manage.student.confirm' },
+      reset: { title: 'manage.reset.title', desc: 'manage.reset.desc', confirm: 'manage.reset.confirm' },
+    };
+
+    const setStatus = (key) => {
+      if (key) { I18N.setText(m.status, key); m.status.hidden = false; } else { m.status.hidden = true; }
+    };
+    const clearError = () => {
+      m.error.hidden = true;
+      m.error.removeAttribute('data-i18n');
+      m.error.removeAttribute('data-i18n-vars');
+      m.error.textContent = '';
+    };
+    const showError = (errOrKey, vars) => {
+      if (typeof errOrKey === 'string' && vars) I18N.setText(m.error, errOrKey, vars);
+      else I18N.setErrorText(m.error, errOrKey, 'manage.failed');
+      m.error.hidden = false;
+    };
+    const selectedPlan = () => (m.course.value
+      ? planCourseRemoval({ courseKey: m.course.value, tracks: manage.tracks, studentKeys: manage.keys })
+      : null);
+    const isReady = () => {
+      if (manage.mode === 'course') return !!selectedPlan();
+      if (manage.mode === 'student') return !!manage.student;
+      if (manage.mode === 'reset') return manage.catalogReady && m.resetPhrase.value.trim().toUpperCase() === RESET_PHRASE;
+      return false;
+    };
+    const refresh = () => {
+      m.confirm.disabled = manage.busy || !isReady();
+      m.cancel.disabled = manage.busy;
+      m.course.disabled = manage.busy || !manage.catalogReady || !Object.keys(manage.tracks).length;
+      m.studentCode.disabled = manage.busy;
+      m.lookup.disabled = manage.busy;
+      m.resetPhrase.disabled = manage.busy || !manage.catalogReady;
+      I18N.setText(m.confirmLabel, manage.busy ? 'manage.working' : (TEXT[manage.mode] || TEXT.course).confirm);
+    };
+
+    function close() {
+      manage.token += 1;           // any read still in flight is now stale
+      manage.mode = null;
+      manage.busy = false;
+      if (m.dialog.open) m.dialog.close();
+    }
+
+    function renderCourses() {
+      m.course.textContent = '';
+      const pick = document.createElement('option');
+      pick.value = '';
+      I18N.setText(pick, 'manage.course.pick');
+      m.course.appendChild(pick);
+      const nameOf = (key) => (manage.tracks[key] && manage.tracks[key].name) || key;
+      Object.keys(manage.tracks).sort((a, b) => nameOf(a).localeCompare(nameOf(b))).forEach((key) => {
+        const option = document.createElement('option');
+        option.value = key;
+        option.textContent = nameOf(key);
+        m.course.appendChild(option);
+      });
+      m.coursePreview.hidden = true;
+      m.courseShared.hidden = true;
+      if (!Object.keys(manage.tracks).length) setStatus('manage.course.none');
+    }
+
+    function renderCoursePreview() {
+      const plan = selectedPlan();
+      m.coursePreview.hidden = !plan;
+      m.courseShared.hidden = !(plan && plan.shared.length);
+      if (plan) {
+        if (plan.columns.length) setHtmlText(m.coursePreview, 'manage.course.preview', { n: plan.columns.length, columns: formatColumnList(plan.columns), students: plan.students });
+        else setHtmlText(m.coursePreview, 'manage.course.previewEmpty');
+        if (plan.shared.length) setHtmlText(m.courseShared, 'manage.course.shared', { columns: formatColumnList(plan.shared) });
+      }
+      refresh();
+    }
+
+    async function open(mode) {
+      const token = ++manage.token;
+      Object.assign(manage, { mode, busy: false, catalogReady: false, tracks: {}, keys: [], student: null });
+      clearError();
+      setStatus(null);
+      Object.keys(m.panels).forEach((name) => { m.panels[name].hidden = name !== mode; });
+      I18N.setText(m.title, TEXT[mode].title);
+      I18N.setText(m.desc, TEXT[mode].desc);
+      m.studentFound.hidden = true;
+      m.studentCode.value = '';
+      m.resetPhrase.value = '';
+      renderCourses();
+      m.coursePreview.hidden = true;
+      refresh();
+      if (typeof m.dialog.showModal === 'function') m.dialog.showModal(); else m.dialog.setAttribute('open', '');
+
+      if (mode === 'student') { m.studentCode.focus(); manage.catalogReady = true; refresh(); return; }
+      setStatus('manage.loading');
+      try {
+        const catalog = await readCatalog();
+        if (token !== manage.token) return;           // closed (or re-opened) while loading
+        manage.tracks = catalog.tracks;
+        manage.keys = catalog.keys;
+        manage.catalogReady = true;
+        setStatus(null);
+        if (mode === 'course') { renderCourses(); m.course.focus(); }
+        if (mode === 'reset') {
+          I18N.setText(m.resetSummary, 'manage.reset.summary', { students: manage.keys.length, courses: Object.keys(manage.tracks).length });
+          setHtmlText(m.resetLabel, 'manage.reset.typeLabel', { phrase: RESET_PHRASE });
+          m.resetPhrase.focus();
+        }
+        refresh();
+      } catch (err) {
+        if (token !== manage.token) return;
+        setStatus(null);
+        showError(err);
+        CT.firebase.reportError(err, { scope: 'admin' });
+        refresh();
+      }
+    }
+
+    async function lookup() {
+      if (manage.busy) return;
+      clearError();
+      manage.student = null;
+      m.studentFound.hidden = true;
+      refresh();
+      const code = cellText(m.studentCode.value);
+      if (!code) { showError('manage.student.empty', {}); return; }
+      const token = manage.token;
+      try {
+        const u = databaseUrls();
+        const shallow = await firebaseRequest(u.studentsUrl, 'GET', undefined, { shallow: 'true' });   // fresh keys
+        if (token !== manage.token) return;
+        const key = findStudentKey(code, shallow && typeof shallow === 'object' ? Object.keys(shallow) : []);
+        if (!key) { showError('manage.student.notFound', { code }); return; }
+        const record = (await firebaseRequest(u.studentUrl(key), 'GET')) || {};
+        if (token !== manage.token) return;
+        const names = Object.keys(record);
+        const nameKey = names.find((k) => NAME_HEADER_PATTERN.test(k));
+        const codeKey = names.find((k) => /code/i.test(k));
+        manage.student = { key, code: codeKey ? String(record[codeKey]) : key };
+        setHtmlText(m.studentFound, 'manage.student.found', { name: nameKey ? String(record[nameKey]) : key, code: manage.student.code, fields: names.length });
+        m.studentFound.hidden = false;
+      } catch (err) {
+        if (token !== manage.token) return;
+        showError(err);
+        CT.firebase.reportError(err, { scope: 'admin' });
+      }
+      refresh();
+    }
+
+    async function confirmDelete() {
+      if (manage.busy || m.confirm.disabled) return;
+      clearError();
+      manage.busy = true;
+      refresh();
+      const done = (messageKey, vars) => CT.toast.show({ id: 'manage-done', kind: 'success', titleKey: 'manage.toast.title', messageKey, vars, duration: 9000 });
+      const partial = (messageKey) => CT.toast.show({ id: 'manage-partial', kind: 'warning', titleKey: 'manage.toast.partialTitle', messageKey, duration: 14000 });
+      try {
+        const mode = manage.mode;
+        if (mode === 'course') {
+          const { plan, recordRemoved } = await removeCourse(m.course.value);
+          done('manage.toast.course', { course: plan.name });
+          if (!recordRemoved) partial('manage.toast.recordKept');
+        } else if (mode === 'student') {
+          await removeStudent(manage.student.key);
+          done('manage.toast.student', { code: manage.student.code });
+        } else {
+          const { metaCleared } = await resetAll();
+          done('manage.toast.reset');
+          if (!metaCleared) partial('manage.toast.metaKept');
+          updateStatsDisplay({ fileName: null });
+        }
+        close();
+        resetBanners();            // they describe an upload that may no longer exist
+        await loadInitialStats();  // the tiles describe the database as it is NOW
+        return;
+      } catch (err) {
+        console.error('CourseTrack Admin — deletion failed:', err);
+        showError(err);
+        CT.firebase.reportError(err, { scope: 'admin' });
+      }
+      manage.busy = false;
+      refresh();
+    }
+
+    q('manage-open-course').addEventListener('click', () => open('course'));
+    q('manage-open-student').addEventListener('click', () => open('student'));
+    q('manage-open-reset').addEventListener('click', () => open('reset'));
+    m.cancel.addEventListener('click', close);
+    m.confirm.addEventListener('click', confirmDelete);
+    m.course.addEventListener('change', renderCoursePreview);
+    m.lookup.addEventListener('click', lookup);
+    m.studentCode.addEventListener('input', () => { manage.student = null; m.studentFound.hidden = true; clearError(); refresh(); });
+    m.studentCode.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); lookup(); } });
+    m.resetPhrase.addEventListener('input', refresh);
+    m.resetPhrase.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); confirmDelete(); } });
+    m.dialog.addEventListener('cancel', (event) => { if (manage.busy) event.preventDefault(); else manage.token += 1; });   // Esc: never while a delete is running
+    m.dialog.addEventListener('click', (event) => { if (event.target === m.dialog && !manage.busy) close(); });             // a click on the backdrop
+  }
+
   let dashboardStarted = false;
 
   /** Everything that touches Firebase or the upload/SheetJS pipeline starts
@@ -1417,6 +1752,7 @@
     if (dashboardStarted) return;
     dashboardStarted = true;
     initUpload();
+    initManage();
     loadInitialStats();
   }
 

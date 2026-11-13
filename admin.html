@@ -173,6 +173,58 @@
         </div>
       </div>
 
+      <!-- ---------- MANAGE UPLOADED DATA: delete a course / delete a student / reset everything ---------- -->
+      <div class="glass-card info-card manage-card" id="manage-card">
+        <h3 class="section-title info-card__title">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6"/></svg>
+          <span data-i18n="manage.title">Manage Uploaded Data</span>
+        </h3>
+        <p class="no-data-hint" data-i18n="manage.subtitle">Remove one course, one student, or everything. Every action asks for confirmation first and only touches what you choose.</p>
+        <div class="manage-actions-row">
+          <button type="button" class="btn btn--ghost" id="manage-open-course" data-i18n="manage.btnCourse">Delete a course…</button>
+          <button type="button" class="btn btn--ghost" id="manage-open-student" data-i18n="manage.btnStudent">Delete a student…</button>
+          <button type="button" class="btn btn--ghost manage-danger-link" id="manage-open-reset" data-i18n="manage.btnReset">Reset everything…</button>
+        </div>
+      </div>
+
+      <!-- One modal, reused by all three actions (admin.js fills in the right panel). -->
+      <dialog id="manage-dialog" class="manage-dialog" aria-labelledby="manage-title" aria-describedby="manage-desc">
+        <div class="manage-dialog__card glass-card">
+          <h2 id="manage-title" class="manage-dialog__title"></h2>
+          <p id="manage-desc" class="manage-dialog__desc"></p>
+          <p id="manage-status" class="manage-status" hidden></p>
+
+          <div class="manage-panel" id="manage-panel-course" hidden>
+            <label class="manage-label" for="manage-course" data-i18n="manage.course.label">Course</label>
+            <select id="manage-course" class="manage-input"></select>
+            <p id="manage-course-preview" class="manage-preview" hidden></p>
+            <p id="manage-course-shared" class="manage-preview manage-preview--muted" hidden></p>
+          </div>
+
+          <div class="manage-panel" id="manage-panel-student" hidden>
+            <label class="manage-label" for="manage-student-code" data-i18n="manage.student.label">Student code</label>
+            <div class="manage-row">
+              <input id="manage-student-code" class="manage-input" type="text" dir="ltr" autocomplete="off" spellcheck="false" maxlength="128" placeholder="e.g. SD26-001" data-i18n-placeholder="manage.student.placeholder" />
+              <button type="button" class="btn btn--ghost" id="manage-student-lookup" data-i18n="manage.student.lookup">Look up</button>
+            </div>
+            <p id="manage-student-found" class="manage-preview" hidden></p>
+          </div>
+
+          <div class="manage-panel" id="manage-panel-reset" hidden>
+            <p id="manage-reset-summary" class="manage-warning"></p>
+            <label class="manage-label" for="manage-reset-phrase" id="manage-reset-label"></label>
+            <input id="manage-reset-phrase" class="manage-input" type="text" dir="ltr" autocomplete="off" spellcheck="false" autocapitalize="characters" />
+          </div>
+
+          <p id="manage-error" class="auth-error" role="alert" hidden></p>
+
+          <div class="manage-dialog__actions">
+            <button type="button" class="btn btn--ghost" id="manage-cancel" data-i18n="manage.cancel">Cancel</button>
+            <button type="button" class="btn btn--danger" id="manage-confirm" disabled><span id="manage-confirm-label"></span></button>
+          </div>
+        </div>
+      </dialog>
+
     </main>
 
     <footer class="app-footer">
