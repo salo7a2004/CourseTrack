@@ -1089,3 +1089,22 @@ dialog.manage-dialog { border: 0; padding: 0; background: transparent; max-width
 .manage-warning { padding: 12px 14px; border-radius: var(--radius-md); font-size: 0.9rem; font-weight: 600; line-height: 1.5; color: var(--danger); background: rgba(225, 29, 72, 0.08); border: 1px solid rgba(225, 29, 72, 0.22); }
 .manage-dialog__actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
 @media (max-width: 520px) { .manage-dialog__card { padding: 20px 18px 18px; } .manage-row { flex-direction: column; } }
+
+/* =======================================================================
+   29. Course sections — each course has its own block of weeks, results, badges and chart (student portal)
+   ======================================================================= */
+.course-blocks { display: flex; flex-direction: column; gap: 44px; margin-top: 12px; }
+.course-blocks[hidden] { display: none; }
+.course-block { display: flex; flex-direction: column; gap: 24px; padding-top: 30px; border-top: 2px solid var(--glass-border); }
+.course-block__title {
+  display: flex; align-items: center; gap: 12px;
+  font-family: var(--font-display); font-size: 1.55rem; font-weight: 800; color: var(--text-strong);
+}
+.course-block__title::before {                 /* the accent bar sits on the leading side in LTR and RTL */
+  content: ''; flex: 0 0 auto; width: 6px; height: 1.4em; border-radius: 3px;
+  background: linear-gradient(180deg, var(--color-primary), var(--color-accent));
+}
+@media print {
+  .course-block { break-inside: auto; }
+  .course-block__title { break-after: avoid; }
+}
