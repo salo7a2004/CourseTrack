@@ -224,6 +224,101 @@
   }
 
   /* =====================================================================
+     4b. COURSE ISOLATION — every course owns its own columns, so it owns its own weeks
+     ---------------------------------------------------------------------
+     The old code unioned the headers of EVERY course into one list and built
+     one week list from it, so a course with 1 week was padded with the
+     "Not Published Yet" weeks of a course that has 2. Now:
+
+       • A header "<Course>_<rest>" belongs to <Course> — "Design_Task_1" and
+         "Design_M1" are Design's; "MEP_Task_2" is MEP's. The split is at the
+         FIRST underscore, so a course name may contain spaces ("Interior Design_T1")
+         or Arabic letters, but not an underscore.
+       • A prefix is a COURSE only if it has at least one numbered week column
+         (M1, Task_1, T2, Week_3, Notes_1 …). "Final_Score" on its own is just a
+         column. That is what keeps ordinary sheets working untouched.
+       • Each course gets a column set in the SAME shape detectColumns() returns,
+         and every renderer (timeline, results, badges, chart) is handed one
+         course's set at a time — so it cannot see another course's keys at all.
+       • A course's weeks are the weeks among ITS OWN columns. Its max week is
+         never influenced by any other course.
+       • Sheets without course prefixes produce no courses: everything stays in
+         `general` and renders exactly as before.
+     ===================================================================== */
+
+  /** "Design_Task_1" -> { prefix: 'Design', rest: 'Task_1' }; null when there is no prefix. */
+  function splitCoursePrefix(header) {
+    const match = /^\s*([^_]+?)\s*_\s*(.+?)\s*$/.exec(String(header));
+    return match ? { prefix: match[1], rest: match[2] } : null;
+  }
+
+  /** What a course key's remainder is: a meeting / task / notes column with its week number, or null (a result column). */
+  function classifyWeekKey(rest) {
+    let num = extractNumberedColumn(rest, /^m/i);
+    if (num !== null) return { kind: 'meetings', num };
+    num = extractNumberedColumn(rest, /^(?:t|w)/i);            // Task_1, T1 — and Week_1 / W1, a weekly result
+    if (num !== null) return { kind: 'tasks', num };
+    num = extractNumberedColumn(rest, /^notes?/i);
+    return num !== null ? { kind: 'notes', num } : null;
+  }
+
+  /**
+   * PURE (no DOM, no network). Splits the sheet's headers into the shared columns and one column set per course.
+   * @param {string[]} headers  every header in the sheet
+   * @param {object} identity   detectColumns() of ALL headers (the code / name / email columns are never part of a course)
+   * @returns {{general: object, courses: {id: string, name: string, columns: object}[]}}
+   */
+  function groupColumnsByCourse(headers, identity) {
+    const identityHeaders = new Set([identity.code, identity.name, identity.email].filter(Boolean));
+    const byPrefix = new Map();
+    headers.forEach((header) => {
+      if (identityHeaders.has(header)) return;
+      const split = splitCoursePrefix(header);
+      if (!split) return;
+      const id = split.prefix.toLowerCase();                       // "design_T1" and "Design_T2" are the same course
+      if (!byPrefix.has(id)) byPrefix.set(id, { id, name: split.prefix, items: [], weekColumns: 0 });
+      const entry = byPrefix.get(id);
+      const week = classifyWeekKey(split.rest);
+      entry.items.push({ header, week });
+      if (week) entry.weekColumns += 1;
+    });
+
+    const claimed = new Set();
+    const courses = [];
+    byPrefix.forEach((entry) => {
+      if (!entry.weekColumns) return;                              // no week columns: not a course ("Final_Score" stays plain)
+      const columns = { code: identity.code, name: identity.name, email: identity.email, meetings: [], tasks: [], notes: [], final: [] };
+      entry.items.forEach(({ header, week }) => {
+        claimed.add(header);
+        if (week) columns[week.kind].push({ key: header, num: week.num }); else columns.final.push(header);
+      });
+      ['meetings', 'tasks', 'notes'].forEach((kind) => columns[kind].sort((a, b) => a.num - b.num));
+      courses.push({ id: entry.id, name: entry.name, columns });
+    });
+    courses.sort((a, b) => a.name.localeCompare(b.name));
+
+    const general = detectColumns(headers.filter((header) => !claimed.has(header)));
+    general.code = identity.code;                                  // identity always comes from the FULL header list
+    general.name = identity.name;
+    general.email = identity.email;
+    return { general, courses };
+  }
+
+  /** True when the student has at least one value in this course. A course they are not in shows nothing at all. */
+  function studentHasCourseData(columns, raw) {
+    const keys = columns.meetings.map((c) => c.key).concat(columns.tasks.map((c) => c.key), columns.notes.map((c) => c.key), columns.final);
+    return keys.some((key) => !isEmptyCell(raw[key]));
+  }
+
+  // Pristine copies of the page's three sections, taken before anything is rendered into them; each course's
+  // own section is a clone of these (ids removed, content cleared), so the markup and translations stay in one place.
+  const sectionTemplates = {
+    timeline: dom.timelineSection ? dom.timelineSection.cloneNode(true) : null,
+    final: dom.finalSection ? dom.finalSection.cloneNode(true) : null,
+    progress: document.getElementById('progress-section') ? document.getElementById('progress-section').cloneNode(true) : null,
+  };
+
+  /* =====================================================================
      5. FIREBASE DATA FETCH — always the latest, never cached
      ===================================================================== */
 
@@ -293,7 +388,10 @@
       .filter((row) => columns.code && String(row[columns.code]).trim() !== '')
       .map((row) => ({ code: String(row[columns.code]).trim(), raw: row }));
 
-    return { columns, students };
+    // Every course gets its OWN columns (and therefore its own weeks). The shared identity columns and any
+    // un-prefixed (legacy) columns stay in `general`. Nothing downstream ever sees another course's keys.
+    const layout = groupColumnsByCourse(headers, columns);
+    return { columns: layout.general, layout, students };
   }
 
   /* =====================================================================
@@ -407,16 +505,20 @@
     return item;
   }
 
-  function renderTimeline(columns, student) {
+  /** Renders ONE column set's weeks — only the weeks that column set actually has. `target` = { section, list };
+   *  without it the page's own timeline is used (the general, un-prefixed columns). */
+  function renderTimeline(columns, student, target) {
+    const section = target ? target.section : dom.timelineSection;
+    const list = target ? target.list : dom.timeline;
     const weeks = buildWeekList(columns);
     if (!weeks.length) {
-      dom.timelineSection.hidden = true;
-      dom.timeline.innerHTML = '';
+      section.hidden = true;
+      list.innerHTML = '';
       return;
     }
-    dom.timeline.innerHTML = '';
-    weeks.forEach((week, index) => dom.timeline.appendChild(buildWeekCard(week, index, student.raw)));
-    dom.timelineSection.hidden = false;
+    list.innerHTML = '';
+    weeks.forEach((week, index) => list.appendChild(buildWeekCard(week, index, student.raw)));
+    section.hidden = false;
   }
 
   /* =====================================================================
@@ -437,8 +539,10 @@
    * never hardcoded, and emptiness is judged per student, per field,
    * at render time.
    */
-  function renderFinalResults(columns, student) {
-    dom.finalResults.innerHTML = '';
+  function renderFinalResults(columns, student, target) {
+    const section = target ? target.section : dom.finalSection;
+    const list = target ? target.list : dom.finalResults;
+    list.innerHTML = '';
     let visibleCount = 0;
 
     columns.final.forEach((key) => {
@@ -459,11 +563,11 @@
 
       el.appendChild(label);
       el.appendChild(valueEl);
-      dom.finalResults.appendChild(el);
+      list.appendChild(el);
       visibleCount += 1;
     });
 
-    dom.finalSection.hidden = visibleCount === 0;
+    section.hidden = visibleCount === 0;
   }
 
   /* =====================================================================
@@ -946,15 +1050,16 @@
 
   /** Injects the badges into the results. A failure here can never stop the
    *  results from showing: it is logged and the badge area stays hidden. */
-  function renderAchievements(columns, student, cohort) {
+  function renderAchievements(columns, student, cohort, target) {
+    let el = null;
     try {
-      const el = getAchievementsEl();
+      el = target || getAchievementsEl();
       const html = renderBadges({ columns, raw: student.raw, cohort: Array.isArray(cohort) ? cohort.map((s) => s.raw) : [] });
       el.innerHTML = html;
       el.hidden = !html;
     } catch (err) {
       console.error('CourseTrack — achievement badges failed (results are unaffected):', err);
-      if (achievementsEl) { achievementsEl.innerHTML = ''; achievementsEl.hidden = true; }
+      if (el) { el.innerHTML = ''; el.hidden = true; }
     }
   }
 
@@ -997,8 +1102,9 @@
     lines: ['#2f54eb', '#d97706'], fontFamily: 'Inter, "Segoe UI", sans-serif',
   };
 
-  let progressChart = null;        // the live Chart instance, if any
-  let lastWeeklyData = null;       // what it shows (also used to redraw it for the PDF)
+  // One entry per chart on the page — the general one and one per course: canvas -> { chart, data }.
+  // `data` is kept so a chart can be redrawn (theme / language switch) and repainted for the PDF.
+  const chartRegistry = new Map();
 
   function formatChartValue(value, percent) {
     return `${Math.round(value * 100) / 100}${percent ? '%' : ''}`;
@@ -1205,20 +1311,26 @@
     return config;
   }
 
-  function destroyChart() {
-    if (progressChart) { progressChart.destroy(); progressChart = null; }
+  /** Destroys the chart on this canvas — or, with no argument, every chart (Chart.js refuses a canvas that still has one). */
+  function destroyChart(canvas) {
+    const targets = canvas ? [canvas] : Array.from(chartRegistry.keys());
+    targets.forEach((target) => {
+      const entry = chartRegistry.get(target);
+      if (entry && entry.chart) entry.chart.destroy();
+      chartRegistry.delete(target);
+    });
   }
 
   /**
    * Draws the weekly grades. THE isolated rendering function: it takes plain
-   * data (see weeklyData above) and touches only <canvas id="progressChart">.
+   * data (see weeklyData above) and touches only the canvas it is given (default <canvas id="progressChart">).
    * @param {{weeks:number[], series:{id:string,labelKey:string,values:(number|null)[],percent:boolean}[]}} weeklyData
    * @param {{animate?:boolean}} [renderOptions]  animate:false for silent redraws (theme / language switch)
    * @returns the Chart instance, or null when there is nothing to draw / Chart.js isn't loaded
    */
-  function renderChart(weeklyData, renderOptions) {
-    destroyChart();                                   // Chart.js refuses a canvas that still has a chart on it
-    const canvas = document.getElementById('progressChart');
+  function renderChart(weeklyData, renderOptions, targetCanvas) {
+    const canvas = targetCanvas || document.getElementById('progressChart');
+    if (canvas) destroyChart(canvas);                 // Chart.js refuses a canvas that still has a chart on it
     if (!canvas || typeof window.Chart !== 'function' || !weeklyData || !weeklyData.series.length) return null;
 
     const stale = typeof window.Chart.getChart === 'function' ? window.Chart.getChart(canvas) : null;
@@ -1226,40 +1338,42 @@
 
     const config = buildChartConfig(weeklyData, readChartTheme(), 'live');
     if (renderOptions && renderOptions.animate === false) config.options.animation = false;
-    progressChart = new window.Chart(canvas, config);
+    const chart = new window.Chart(canvas, config);
+    chartRegistry.set(canvas, { chart, data: weeklyData });
     canvas.setAttribute('aria-label', describeChart(weeklyData));
 
     // The results may only just have been revealed: let the chart re-measure its container.
-    window.requestAnimationFrame(() => { if (progressChart) progressChart.resize(); });
-    return progressChart;
+    window.requestAnimationFrame(() => { const entry = chartRegistry.get(canvas); if (entry && entry.chart === chart) chart.resize(); });
+    return chart;
   }
 
   /** Shows/hides the section and draws the chart. A failure here can never stop
    *  the results from showing: it is logged and the section stays hidden. */
-  function renderProgressChart(columns, student) {
-    const section = document.getElementById('progress-section');
-    if (!section) return;
+  function renderProgressChart(columns, student, target) {
+    const section = target ? target.section : document.getElementById('progress-section');
+    const canvas = target ? target.canvas : document.getElementById('progressChart');
+    if (!section || !canvas) return;
     try {
       let data = buildWeeklyData(columns, student.raw);
       if (data && typeof window.Chart !== 'function') {
         console.warn('CourseTrack — Chart.js is not loaded, so the progress chart is skipped.');
         data = null;
       }
-      lastWeeklyData = data;
       section.hidden = !data;
-      if (data) renderChart(data); else destroyChart();
+      if (data) renderChart(data, undefined, canvas); else destroyChart(canvas);
     } catch (err) {
       console.error('CourseTrack — progress chart failed (results are unaffected):', err);
-      lastWeeklyData = null;
-      destroyChart();
+      destroyChart(canvas);
       section.hidden = true;
     }
   }
 
   /** Re-draws the chart without animation, e.g. after a theme or language switch. */
   function refreshProgressChart() {
-    if (!lastWeeklyData || !progressChart) return;
-    try { renderChart(lastWeeklyData, { animate: false }); } catch (err) { console.error('CourseTrack — chart refresh failed:', err); }
+    // a snapshot: renderChart() re-registers each canvas while we walk the list
+    Array.from(chartRegistry.entries()).forEach(([canvas, entry]) => {
+      try { renderChart(entry.data, { animate: false }, canvas); } catch (err) { console.error('CourseTrack — chart refresh failed:', err); }
+    });
   }
 
   /** The chart follows the theme toggle (data-theme on <html>) and the language switch. */
@@ -1277,15 +1391,15 @@
    * window.print() must stay inside the user's tap on phones.
    * Returns false (and the caller drops the section) rather than print a blank box.
    */
-  function paintChartForPrint(targetCanvas) {
-    if (!lastWeeklyData || typeof window.Chart !== 'function') return false;
+  function paintChartForPrint(targetCanvas, weeklyData) {
+    if (!weeklyData || typeof window.Chart !== 'function') return false;
     const source = document.createElement('canvas');
     source.width = PRINT_CHART_SIZE.width;
     source.height = PRINT_CHART_SIZE.height;
     let chart = null;
     try {
       const theme = Object.assign({}, PRINT_CHART_THEME, { fontFamily: readChartTheme().fontFamily });
-      chart = new window.Chart(source, buildChartConfig(lastWeeklyData, theme, 'print'));
+      chart = new window.Chart(source, buildChartConfig(weeklyData, theme, 'print'));
 
       const pixels = source.getContext('2d').getImageData(0, 0, source.width, source.height).data;
       let drawn = false;
@@ -1305,13 +1419,91 @@
     }
   }
 
-  function renderStudent(columns, student, cohort) {
+  let courseBlocksEl = null;   // created on first use, directly under the page's own results sections
+
+  function getCourseBlocksEl() {
+    if (!courseBlocksEl) {
+      courseBlocksEl = document.createElement('div');
+      courseBlocksEl.id = 'course-blocks';
+      courseBlocksEl.className = 'course-blocks';
+      courseBlocksEl.hidden = true;
+      dom.finalSection.insertAdjacentElement('afterend', courseBlocksEl);
+    }
+    return courseBlocksEl;
+  }
+
+  /** A fresh, empty copy of one of the page's sections (ids removed) for a course's own use. */
+  function cloneSection(template, listSelector) {
+    if (!template) return null;
+    const section = template.cloneNode(true);
+    section.removeAttribute('id');
+    section.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
+    section.hidden = true;
+    const list = listSelector ? section.querySelector(listSelector) : null;
+    if (list) list.innerHTML = '';
+    return { section, list };
+  }
+
+  /** One course's section: its title, its badges, its chart, ITS weeks and its results. Everything inside is
+   *  built from this course's column set alone, so another course's weeks can never appear in it. */
+  function buildCourseBlock(course, student, cohort) {
+    const block = document.createElement('section');
+    block.className = 'course-block';
+    block.setAttribute('data-course', course.id);
+    block.setAttribute('role', 'group');
+    block.setAttribute('aria-label', course.name);
+
+    const title = document.createElement('h3');
+    title.className = 'course-block__title';
+    setAutoText(title, course.name);
+    block.appendChild(title);
+
+    const badges = document.createElement('div');
+    badges.className = 'achievements';
+    badges.hidden = true;
+    block.appendChild(badges);
+
+    const chart = cloneSection(sectionTemplates.progress, null);
+    const timeline = cloneSection(sectionTemplates.timeline, '.timeline');
+    const results = cloneSection(sectionTemplates.final, '.final-grid');
+    const canvas = chart ? chart.section.querySelector('canvas') : null;
+    if (canvas) { canvas.removeAttribute('style'); canvas.removeAttribute('width'); canvas.removeAttribute('height'); }
+    [chart, timeline, results].forEach((part) => { if (part) block.appendChild(part.section); });
+
+    renderAchievements(course.columns, student, cohort, badges);
+    if (timeline) renderTimeline(course.columns, student, timeline);
+    if (results) renderFinalResults(course.columns, student, results);
+    I18N.apply(block);
+    return { block, columns: course.columns, chart: chart && canvas ? { section: chart.section, canvas } : null };
+  }
+
+  /** Replaces the course sections for this student: only the courses they actually have data in. Returns the
+   *  charts still to be drawn (they need a visible, measurable canvas, so that happens after the reveal). */
+  function renderCourseBlocks(courses, student, cohort) {
+    const host = getCourseBlocksEl();
+    host.textContent = '';
+    const pending = [];
+    courses.forEach((course) => {
+      if (!studentHasCourseData(course.columns, student.raw)) return;     // not their course: no section, no empty weeks
+      const built = buildCourseBlock(course, student, cohort);
+      host.appendChild(built.block);
+      pending.push(built);
+    });
+    host.hidden = pending.length === 0;
+    return pending;
+  }
+
+  function renderStudent(layout, student, cohort) {
+    const columns = layout.general;
+    destroyChart();                                       // every previous chart, the general one and each course's
     renderProfile(columns, student);
     renderAchievements(columns, student, cohort);
     renderTimeline(columns, student);
     renderFinalResults(columns, student);
+    const courseBlocks = renderCourseBlocks(layout.courses, student, cohort);
     setViewState({ results: true });
     renderProgressChart(columns, student);   // after the results are visible, so the canvas has a real size
+    courseBlocks.forEach((built) => { if (built.chart) renderProgressChart(built.columns, student, built.chart); });
 
     window.requestAnimationFrame(() => {
       dom.results.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1335,7 +1527,7 @@
     // Every branch — found, not found, or a fetch error — reaches the
     // `finally` block below, so the spinner can never get stuck.
     try {
-      const { columns, students } = await fetchCourseData();
+      const { layout, students } = await fetchCourseData();
       const normalized = code.trim().toLowerCase();
       const student = students.find((s) => s.code.toLowerCase() === normalized) || null;
 
@@ -1346,7 +1538,7 @@
         return;
       }
 
-      renderStudent(columns, student, students);   // `students` = the whole cohort, for the Top Performer benchmark
+      renderStudent(layout, student, students);   // `students` = the whole cohort, for the Top Performer benchmark
     } catch (err) {
       console.error('CourseTrack — search failed:', err);
       I18N.setText(dom.errorTitle, 'err.generic.title');
@@ -1451,10 +1643,16 @@
     const toolbarClone = resultsClone.querySelector('.results-toolbar');
     if (toolbarClone) toolbarClone.remove();
 
-    // A cloned <canvas> is blank — swap in a fresh drawing of the chart, or drop the section.
-    const chartSectionClone = resultsClone.querySelector('.progress-section');
-    const chartCanvasClone = resultsClone.querySelector('#progressChart');
-    if (chartSectionClone && (!chartCanvasClone || !paintChartForPrint(chartCanvasClone))) chartSectionClone.remove();
+    // A cloned <canvas> is blank — swap in a fresh drawing of EACH chart (the general one and one per course;
+    // the live and cloned pages list them in the same order), or drop that chart's section.
+    const liveCanvases = Array.from(dom.results.querySelectorAll('.progress-section canvas'));
+    Array.from(resultsClone.querySelectorAll('.progress-section canvas')).forEach((canvasClone, index) => {
+      const entry = chartRegistry.get(liveCanvases[index]);
+      if (!entry || !paintChartForPrint(canvasClone, entry.data)) {
+        const sectionClone = canvasClone.closest('.progress-section');
+        if (sectionClone) sectionClone.remove();
+      }
+    });
     resultsClone.removeAttribute('id');
     resultsClone.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
     resultsClone.hidden = false;
