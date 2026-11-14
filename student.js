@@ -45,10 +45,12 @@
     negative: ['absent', 'no', 'fail', 'failed', 'not eligible', 'ineligible', 'missing', 'incomplete', 'inactive', 'not submitted', 'rejected'],
   };
 
+  // `pattern` = headers that merely MENTION the field; `exact` = headers that ARE the field. An exact header always
+  // beats a looser one, so "Course Name" or a form question can never be picked over the real "Name" column.
   const IDENTITY_FIELDS = [
-    { key: 'code', pattern: /code|كود|رقم\s*الطالب|\bid\b/i },
-    { key: 'email', pattern: /e-?mail|بريد/i },
-    { key: 'name', pattern: /name|اسم/i },
+    { key: 'code', pattern: /code|كود|رقم\s*الطالب|\bid\b/i, exact: /^(?:student[\s_-]*)?(?:code|id)$|^(?:كود(?:\s*الطالب)?|الكود|رقم\s*الطالب)$/i },
+    { key: 'email', pattern: /e-?mail|بريد/i, exact: /^e-?mail(?:\s*address)?$|^البريد(?:\s*الإلكتروني)?$/i },
+    { key: 'name', pattern: /name|اسم/i, exact: /^(?:(?:student|full)[\s_-]*)?name$|^(?:الاسم|اسم\s*الطالب|اسم\s*الطالبة|الاسم\s*(?:بالكامل|الكامل|ثلاثي))$/i },
   ];
 
   // Session labels and fallback texts ("Not Published Yet", ...) now live
@@ -174,6 +176,72 @@
      4. COLUMN DETECTION — never hardcodes a column name or week number
      ===================================================================== */
 
+  /* -------------------------------------------------------------------
+     Telling real data columns from form questions, notes and metadata
+     ------------------------------------------------------------------- */
+
+  const INSTRUCTION_START = /^(?:please|enter|write|type|fill|اكتب|اكتبي|ادخل|أدخل|برجاء|يرجى|من\s+فضلك)(?=\s|$)/i;
+
+  /** Is this header really a form QUESTION or INSTRUCTION ("اكتب اسمك ثلاثي ...", "Please enter your full name")?
+   *  Such a header can contain "name" or "اسم" without being the name column. */
+  function looksLikeInstruction(text) {
+    const value = String(text).trim();
+    return value.length > 45 || value.split(/\s+/).length > 6 || /\.{2,}|…|[?؟]/.test(value) || INSTRUCTION_START.test(value);
+  }
+
+  /** The header for an identity field: an EXACT match first, otherwise the first looser match — never an instruction. */
+  function pickIdentityHeader(headers, pattern, exact) {
+    const matches = headers.filter((header) => pattern.test(String(header).trim()) && !looksLikeInstruction(header));
+    return matches.find((header) => exact.test(String(header).trim())) || matches[0] || null;
+  }
+
+  /** Every EXACT name header ("Name", "Student Name", "الاسم" …), in sheet order. Only these may stand in for the primary
+   *  name when it is blank for a student — a loose match such as "Course Name" or "Username" never may. */
+  function rankNameHeaders(headers) {
+    const field = IDENTITY_FIELDS.find((f) => f.key === 'name');
+    return headers.filter((header) => field.exact.test(String(header).trim()) && !looksLikeInstruction(header));
+  }
+
+  /** A plausible person's name, not a number, an e-mail address or a link that landed in the wrong column. */
+  function looksLikeName(value) {
+    const text = String(value).trim();
+    return !!text && text.length <= 80 && !readScore(text) && !/@/.test(text) && !/^https?:/i.test(text);
+  }
+
+  /** The student's name: the primary Name column; only if THAT cell is blank for this student, the other exact
+   *  name columns, in order. '' when there is none — the caller shows the translatable "Student" fallback. */
+  function resolveStudentName(columns, raw) {
+    const order = columns.nameCandidates && columns.nameCandidates.length ? columns.nameCandidates : (columns.name ? [columns.name] : []);
+    for (let i = 0; i < order.length; i += 1) {
+      const value = displayValue(raw[order[i]], '');
+      if (value && looksLikeName(value)) return value;
+    }
+    return '';
+  }
+
+  const NOTES_HEADER = /(?:^|[^a-z])(?:notes?|feedback|comments?|remarks?|instructions?)(?:[^a-z]|$)|ملاحظ|تعليق|تعليمات|توجيه|تغذية\s*راجعة/i;
+  const METADATA_HEADER = /time\s*-?\s*stamp|date|e-?mail|phone|mobile|whats\s*-?\s*app|telephone|address|link|url|national|birth|gender|(?:^|[^a-z])(?:age|batch|group|section|cohort|year|semester)(?:[^a-z]|$)|الطابع\s*الزمني|تاريخ|بريد|هاتف|موبايل|جوال|واتس|عنوان|رابط|الرقم\s*القومي|العمر|الجنس/i;
+  const GRADE_HEADER = /(?:^|[^a-z])(?:scores?|exams?|tasks?|grades?|marks?|totals?|finals?|results?|ranks?|points?|quiz(?:zes)?|midterm|assignments?|projects?)(?:[^a-z]|$)|درجة|الدرجة|نتيجة|النتيجة|المجموع|مجموع|امتحان|اختبار|ترتيب/i;
+
+  /**
+   * Is this cell a GRADE that belongs in "Final Results"?
+   *   yes  a number in any form — 92, "92.5", "92%", "45/50", "٩٢" — in any column that is not notes / metadata / identity
+   *   yes  a SHORT result word ("Passed", "ممتاز") in a column that is plainly a result column (Final_Result, Exam …)
+   *   no   blanks, objects, booleans
+   *   no   notes, feedback, comments, form questions / instructions, names, codes, e-mails, phones, dates, timestamps
+   */
+  function isGradeResult(header, rawValue, columns) {
+    if (isEmptyCell(rawValue) || typeof rawValue === 'object' || typeof rawValue === 'boolean') return false;
+    const key = String(header).trim();
+    if (columns && [columns.code, columns.name, columns.email].concat(columns.nameCandidates || []).indexOf(header) !== -1) return false;
+    if (looksLikeInstruction(key) || NOTES_HEADER.test(key)) return false;
+    const gradeKey = GRADE_HEADER.test(key);
+    if (METADATA_HEADER.test(key) && !gradeKey) return false;
+    if (readScore(rawValue)) return true;
+    const text = String(rawValue).trim();
+    return gradeKey && text.length <= 24 && text.split(/\s+/).length <= 3;
+  }
+
   function extractNumberedColumn(header, prefixPattern) {
     const clean = String(header).trim();
     if (!clean || !prefixPattern.test(clean)) return null;
@@ -182,13 +250,12 @@
   }
 
   function detectColumns(headers) {
-    const columns = { code: null, name: null, email: null, meetings: [], tasks: [], notes: [], final: [] };
+    const columns = { code: null, name: null, email: null, nameCandidates: [], meetings: [], tasks: [], notes: [], final: [] };
 
-    IDENTITY_FIELDS.forEach(({ key, pattern }) => {
-      if (columns[key]) return;
-      const match = headers.find((header) => pattern.test(String(header).trim()));
-      if (match) columns[key] = match;
+    IDENTITY_FIELDS.forEach(({ key, pattern, exact }) => {
+      columns[key] = pickIdentityHeader(headers, pattern, exact);
     });
+    columns.nameCandidates = rankNameHeaders(headers);
 
     headers.forEach((header) => {
       if (header === columns.code || header === columns.name || header === columns.email) return;
@@ -287,7 +354,7 @@
     const courses = [];
     byPrefix.forEach((entry) => {
       if (!entry.weekColumns) return;                              // no week columns: not a course ("Final_Score" stays plain)
-      const columns = { code: identity.code, name: identity.name, email: identity.email, meetings: [], tasks: [], notes: [], final: [] };
+      const columns = { code: identity.code, name: identity.name, email: identity.email, nameCandidates: identity.nameCandidates, meetings: [], tasks: [], notes: [], final: [] };
       entry.items.forEach(({ header, week }) => {
         claimed.add(header);
         if (week) columns[week.kind].push({ key: header, num: week.num }); else columns.final.push(header);
@@ -301,6 +368,7 @@
     general.code = identity.code;                                  // identity always comes from the FULL header list
     general.name = identity.name;
     general.email = identity.email;
+    general.nameCandidates = identity.nameCandidates;
     return { general, courses };
   }
 
@@ -469,6 +537,21 @@
      7. COURSE PROGRESS (Week timeline) — only real weeks, ever
      ===================================================================== */
 
+  const WEEK_RULES = {
+    // false: a week card shows only the fields this student has a value for.
+    // true : a field of a REAL week that is still blank shows "Not Published Yet" (a week with no data at all never renders).
+    showPendingFields: false,
+  };
+
+  /** Does this student have ANY value in this week? A week without one is not rendered: it does not exist for them. */
+  function weekHasData(week, raw) {
+    return [week.meetingKey, week.taskKey, week.notesKey].some((key) => key && !isEmptyCell(raw[key]));
+  }
+
+  function fieldVisible(key, row) {
+    return !!key && (WEEK_RULES.showPendingFields || !isEmptyCell(row[key]));
+  }
+
   function buildWeekCard(week, index, row) {
     const item = document.createElement('div');
     item.className = 'timeline-item';
@@ -485,17 +568,17 @@
     const body = document.createElement('div');
     body.className = 'timeline-item__body';
 
-    if (week.meetingKey) {
+    if (fieldVisible(week.meetingKey, row)) {
       const value = row[week.meetingKey];
       const status = isEmptyCell(value) ? 'pending' : classifyValue(value);
       body.appendChild(buildFieldCard('session.meeting', value, 'session.notPublished', { status, iconKind: 'meeting' }, ICONS.meeting));
     }
-    if (week.taskKey) {
+    if (fieldVisible(week.taskKey, row)) {
       const value = row[week.taskKey];
       const status = isEmptyCell(value) ? 'pending' : classifyValue(value);
       body.appendChild(buildFieldCard('session.task', value, 'session.notPublished', { status, iconKind: 'task' }, ICONS.task));
     }
-    if (week.notesKey) {
+    if (fieldVisible(week.notesKey, row)) {
       const value = row[week.notesKey];
       const status = isEmptyCell(value) ? 'pending' : 'neutral';
       body.appendChild(buildFieldCard('session.notes', value, 'session.noNotes', { status, iconKind: 'notes' }, ICONS.notes));
@@ -510,7 +593,7 @@
   function renderTimeline(columns, student, target) {
     const section = target ? target.section : dom.timelineSection;
     const list = target ? target.list : dom.timeline;
-    const weeks = buildWeekList(columns);
+    const weeks = buildWeekList(columns).filter((week) => weekHasData(week, student.raw));   // only weeks THIS student has data in
     if (!weeks.length) {
       section.hidden = true;
       list.innerHTML = '';
@@ -526,6 +609,11 @@
      ===================================================================== */
 
   /**
+   * ONLY GRADES become cards (see isGradeResult): a number in any form (92, "92%",
+   * "45/50", "٩٢"), or a short result word in a plainly result-named column
+   * ("Final_Result: Passed"). Notes, feedback, form questions / instructions,
+   * names, codes, e-mails, phones and timestamps never do.
+   *
    * Renders one tile per "final" column — but only for columns THIS
    * student actually has a value in. A column that exists in the sheet
    * (e.g. the admin uploaded a file with "Rank" or "Final Score" headers
@@ -547,7 +635,7 @@
 
     columns.final.forEach((key) => {
       const value = student.raw[key];
-      if (isEmptyCell(value)) return; // nothing to show yet for this student — skip, don't pad with "—"
+      if (!isGradeResult(key, value, columns)) return; // blank, text, notes, metadata or identity: not a grade — never a card
 
       const el = document.createElement('div');
       el.className = 'final-item';
@@ -575,7 +663,7 @@
      ===================================================================== */
 
   function renderProfile(columns, student) {
-    const studentName = columns.name ? displayValue(student.raw[columns.name], '') : '';
+    const studentName = resolveStudentName(columns, student.raw);
     if (studentName) {
       setAutoText(dom.studentName, studentName);
     } else {
