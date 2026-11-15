@@ -225,8 +225,8 @@
 
   /**
    * Is this cell a GRADE that belongs in "Final Results"?
-   *   yes  a number in any form — 92, "92.5", "92%", "45/50", "٩٢" — in any column that is not notes / metadata / identity
-   *   yes  a SHORT result word ("Passed", "ممتاز") in a column that is plainly a result column (Final_Result, Exam …)
+   *   yes  a NUMBER in any form — 92, "92.5", "92%", "45/50", "٩٢" — in any column that is not notes / metadata / identity
+   *   no   anything that is not a number, whatever the column is called
    *   no   blanks, objects, booleans
    *   no   notes, feedback, comments, form questions / instructions, names, codes, e-mails, phones, dates, timestamps
    */
@@ -237,9 +237,7 @@
     if (looksLikeInstruction(key) || NOTES_HEADER.test(key)) return false;
     const gradeKey = GRADE_HEADER.test(key);
     if (METADATA_HEADER.test(key) && !gradeKey) return false;
-    if (readScore(rawValue)) return true;
-    const text = String(rawValue).trim();
-    return gradeKey && text.length <= 24 && text.split(/\s+/).length <= 3;
+    return !!readScore(rawValue);          // NUMERIC grades only — words ("Passed", "Absent"), notes and text never qualify
   }
 
   function extractNumberedColumn(header, prefixPattern) {
@@ -1390,7 +1388,7 @@
     if (print) {
       config.options.devicePixelRatio = 1;
       config.options.events = [];
-      // a solid paper background — which also lets paintChartForPrint() tell a real drawing from a blank canvas
+      // a solid paper background, so the chart is never see-through on a dark theme
       config.plugins = [{
         id: 'paperBackground',
         beforeDraw: (chart) => { chart.ctx.save(); chart.ctx.fillStyle = theme.surface; chart.ctx.fillRect(0, 0, chart.width, chart.height); chart.ctx.restore(); },
@@ -1472,42 +1470,8 @@
     I18N.onChange(refreshProgressChart);
   }
 
-  /**
-   * For the PDF report card: a cloned <canvas> is blank, so the chart is drawn
-   * again on a fixed-size offscreen canvas in the light print palette and its
-   * pixels are copied into the clone. Everything here is synchronous, because
-   * window.print() must stay inside the user's tap on phones.
-   * Returns false (and the caller drops the section) rather than print a blank box.
-   */
-  function paintChartForPrint(targetCanvas, weeklyData) {
-    if (!weeklyData || typeof window.Chart !== 'function') return false;
-    const source = document.createElement('canvas');
-    source.width = PRINT_CHART_SIZE.width;
-    source.height = PRINT_CHART_SIZE.height;
-    let chart = null;
-    try {
-      const theme = Object.assign({}, PRINT_CHART_THEME, { fontFamily: readChartTheme().fontFamily });
-      chart = new window.Chart(source, buildChartConfig(weeklyData, theme, 'print'));
-
-      const pixels = source.getContext('2d').getImageData(0, 0, source.width, source.height).data;
-      let drawn = false;
-      for (let i = 3; i < pixels.length; i += 4) { if (pixels[i] !== 0) { drawn = true; break; } }
-      if (!drawn) return false;
-
-      targetCanvas.removeAttribute('style');          // the clone carries the live chart's pixel sizes
-      targetCanvas.width = source.width;
-      targetCanvas.height = source.height;
-      targetCanvas.getContext('2d').drawImage(source, 0, 0);
-      return true;
-    } catch (err) {
-      console.error('CourseTrack — could not draw the chart for the report card:', err);
-      return false;
-    } finally {
-      if (chart) chart.destroy();
-    }
-  }
-
   let courseBlocksEl = null;   // created on first use, directly under the page's own results sections
+  let currentReport = null;    // { layout, student } of what is on screen: the official transcript is generated from THIS data
 
   function getCourseBlocksEl() {
     if (!courseBlocksEl) {
@@ -1583,6 +1547,7 @@
 
   function renderStudent(layout, student, cohort) {
     const columns = layout.general;
+    currentReport = { layout, student };
     destroyChart();                                       // every previous chart, the general one and each course's
     renderProfile(columns, student);
     renderAchievements(columns, student, cohort);
@@ -1718,66 +1683,155 @@
   const PRINT_ROOT_ID = 'print-root';
   let teardownStagedReport = null; // removes the report currently staged for printing, if any
 
-  /** Builds the printable report: banner + a clone of the current results + footer. */
+  /* ---------------------------------------------------------------------
+     THE OFFICIAL TRANSCRIPT
+     ---------------------------------------------------------------------
+     The printed document is NOT a copy of the web page. It is generated from the
+     data on screen (currentReport) as plain semantic tables — so a card, badge,
+     avatar, chart or gradient cannot appear in it however the screen CSS changes,
+     because nothing ever creates one. It uses the very same functions that decide
+     the weeks, the grades and the name on screen, so the isolation rules hold on
+     paper exactly as they do on screen:
+       • one section per course, built from that course's own columns only;
+       • a week row only where THIS student has data;
+       • "Final Results" = numeric grades only (isGradeResult);
+       • the name comes from resolveStudentName — never a generic fallback.
+     style.css §22 then sets it in pure black on white on A4.
+     --------------------------------------------------------------------- */
+
+  function txEl(tag, className, text) {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text !== undefined && text !== null) el.textContent = text;
+    return el;
+  }
+
+  /** "Design_Score" inside the Design section -> "Score"; "Final_Score" -> "Final Score". */
+  function transcriptLabel(key, course) {
+    let label = String(key).trim();
+    if (course) {
+      const split = splitCoursePrefix(label);
+      if (split && split.prefix.toLowerCase() === course.id) label = split.rest;
+    }
+    return label.replace(/_+/g, ' ').trim();
+  }
+
+  /** One column set's rows for this student: only weeks they have data in, only numeric grades. */
+  function transcriptRows(columns, raw, course) {
+    const cell = (key) => (key && !isEmptyCell(raw[key]) ? displayValue(raw[key]) : '');
+    const weeks = buildWeekList(columns)
+      .filter((week) => weekHasData(week, raw))
+      .map((week) => ({ num: week.num, meeting: cell(week.meetingKey), task: cell(week.taskKey), notes: cell(week.notesKey) }));
+    const finals = columns.final
+      .filter((key) => isGradeResult(key, raw[key], columns))
+      .map((key) => ({ label: transcriptLabel(key, course), value: displayValue(raw[key]) }));
+    return { weeks, finals };
+  }
+
+  function transcriptTable(className, headings, rows) {
+    const table = txEl('table', className);
+    const head = txEl('tr');
+    headings.forEach((heading) => head.appendChild(txEl('th', null, heading)));
+    table.appendChild(txEl('thead')).appendChild(head);
+    const body = txEl('tbody');
+    rows.forEach((cells) => {
+      const tr = txEl('tr');
+      cells.forEach((text) => {
+        tr.appendChild(txEl('td', null, text));   // follows the document's direction; Latin runs inside Arabic still set correctly
+      });
+      body.appendChild(tr);
+    });
+    table.appendChild(body);
+    return table;
+  }
+
+  /** Builds the printable transcript from the data on screen. */
   function buildReportRoot() {
-    const root = document.createElement('div');
+    const root = txEl('div', 'transcript');
     root.id = PRINT_ROOT_ID;
     root.setAttribute('aria-hidden', 'true');
+    const view = currentReport;
+    if (!view) return root;
 
-    // Clone just the results, minus the toolbar (the Download button must
-    // never appear in its own printout). Ids are stripped so the clone
-    // can't create duplicate ids on the live page.
-    const resultsClone = dom.results.cloneNode(true);
-    const toolbarClone = resultsClone.querySelector('.results-toolbar');
-    if (toolbarClone) toolbarClone.remove();
+    const raw = view.student.raw;
+    const general = view.layout.general;
+    const placeholder = '—';
 
-    // A cloned <canvas> is blank — swap in a fresh drawing of EACH chart (the general one and one per course;
-    // the live and cloned pages list them in the same order), or drop that chart's section.
-    const liveCanvases = Array.from(dom.results.querySelectorAll('.progress-section canvas'));
-    Array.from(resultsClone.querySelectorAll('.progress-section canvas')).forEach((canvasClone, index) => {
-      const entry = chartRegistry.get(liveCanvases[index]);
-      if (!entry || !paintChartForPrint(canvasClone, entry.data)) {
-        const sectionClone = canvasClone.closest('.progress-section');
-        if (sectionClone) sectionClone.remove();
-      }
-    });
-    resultsClone.removeAttribute('id');
-    resultsClone.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
-    resultsClone.hidden = false;
-
-    // Report banner + footer — built from CONFIG and the dictionary rather
-    // than hardcoded, so they follow both the branding and the language.
-    const courseName = I18N.cfgOr('courseName', null) || 'Student Academic Report';
-    const primaryOrgName = (CONFIG.organizations && CONFIG.organizations.primary && CONFIG.organizations.primary.name) || '';
-    const reportDate = new Date().toLocaleDateString(I18N.locale(), { year: 'numeric', month: 'long', day: 'numeric' });
-
-    const header = document.createElement('div');
-    header.className = 'print-header';
-    header.innerHTML = `
-      <div>
-        <div class="print-header__title">${escapeHtml(I18N.t('print.title'))}</div>
-        <div class="print-header__subtitle">${escapeHtml(I18N.t('print.subtitle', { course: courseName }))}</div>
-      </div>
-      <div class="print-header__date">${escapeHtml(reportDate)}</div>
-    `;
-
-    const footer = document.createElement('div');
-    footer.className = 'print-footer';
-    footer.textContent = primaryOrgName
-      ? I18N.t('print.footerOrg', { org: primaryOrgName })
-      : I18N.t('print.footer');
-
+    // ---- header: title + horizontal rule ----
+    const header = txEl('header', 'tx-header');
+    header.appendChild(txEl('h1', 'tx-title', I18N.t('tx.title')));
+    header.appendChild(txEl('hr', 'tx-rule'));
     root.appendChild(header);
-    root.appendChild(resultsClone);
-    root.appendChild(footer);
 
-    // The report always prints on the light palette (style.css §22), but a
-    // customised brand color from config.js must still carry through —
-    // mirror the same runtime override applyBrandColors() applies to <html>.
-    if (CONFIG.colors) {
-      if (CONFIG.colors.primary) root.style.setProperty('--color-primary', CONFIG.colors.primary);
-      if (CONFIG.colors.secondary) root.style.setProperty('--color-accent', CONFIG.colors.secondary);
+    // ---- student details: a formal two-pair grid ----
+    const reportDate = new Date().toLocaleDateString(I18N.locale(), { year: 'numeric', month: 'long', day: 'numeric' });
+    const email = general.email ? displayValue(raw[general.email], '') : '';
+    const meta = txEl('table', 'tx-meta');
+    const metaBody = txEl('tbody');
+    [[['tx.fullName', resolveStudentName(general, raw) || placeholder], ['tx.studentCode', view.student.code || placeholder]],
+     [['tx.email', email || placeholder], ['tx.issued', reportDate]]].forEach((pair) => {
+      const tr = txEl('tr');
+      pair.forEach(([labelKey, value]) => {
+        tr.appendChild(txEl('th', null, I18N.t(labelKey)));
+        tr.appendChild(txEl('td', null, value));
+      });
+      metaBody.appendChild(tr);
+    });
+    meta.appendChild(metaBody);
+    root.appendChild(meta);
+
+    // ---- one section per course the student has data in (plus the un-prefixed columns, if any) ----
+    const sections = [];
+    const generalRows = transcriptRows(general, raw, null);
+    if (generalRows.weeks.length || generalRows.finals.length) {
+      sections.push({ title: view.layout.courses.length ? I18N.t('tx.general') : (I18N.cfgOr('courseName', null) || ''), rows: generalRows });
     }
+    view.layout.courses.forEach((course) => {
+      if (!studentHasCourseData(course.columns, raw)) return;           // not their course: not in their transcript
+      const rows = transcriptRows(course.columns, raw, course);
+      if (rows.weeks.length || rows.finals.length) sections.push({ title: course.name, rows });
+    });
+
+    let rowCount = 0;
+    const built = [];
+    sections.forEach(({ title, rows }) => {
+      const section = txEl('section', 'tx-course');
+      if (title) section.appendChild(txEl('h2', 'tx-course__title', title));
+      if (rows.weeks.length) {
+        const headings = [I18N.t('tx.week')];
+        const has = { meeting: rows.weeks.some((w) => w.meeting), task: rows.weeks.some((w) => w.task), notes: rows.weeks.some((w) => w.notes) };
+        if (has.meeting) headings.push(I18N.t('session.meeting'));
+        if (has.task) headings.push(I18N.t('session.task'));
+        if (has.notes) headings.push(I18N.t('session.notes'));
+        section.appendChild(txEl('h3', 'tx-section-title', I18N.t('tx.weekly')));
+        section.appendChild(transcriptTable('tx-table tx-table--weeks', headings, rows.weeks.map((w) => {
+          const cells = [I18N.t('week.title', { n: w.num })];
+          if (has.meeting) cells.push(w.meeting || placeholder);
+          if (has.task) cells.push(w.task || placeholder);
+          if (has.notes) cells.push(w.notes || placeholder);
+          return cells;
+        })));
+      }
+      if (rows.finals.length) {
+        section.appendChild(txEl('h3', 'tx-section-title', I18N.t('tx.final')));
+        section.appendChild(transcriptTable('tx-table tx-table--final', [I18N.t('tx.metric'), I18N.t('tx.score')], rows.finals.map((f) => [f.label, f.value])));
+      }
+      rowCount += rows.weeks.length + rows.finals.length + 4;
+      built.push(section);
+    });
+    // The last course and the footer travel TOGETHER: if a long transcript has to run onto a second page, a whole
+    // course moves with the footer — never a lone line stranded on its own page.
+    const tail = txEl('div', 'tx-tail');
+    built.forEach((section, index) => (index < built.length - 1 ? root : tail).appendChild(section));
+    if (!built.length) tail.appendChild(txEl('p', 'tx-empty', I18N.t('tx.noRecords')));
+
+    // The more rows, the tighter the type — so a typical transcript stays on ONE A4 page.
+    root.classList.add(rowCount > 28 ? 'tx--dense' : rowCount > 22 ? 'tx--compact' : 'tx--normal');
+
+    // ---- footer ----
+    const primaryOrgName = (CONFIG.organizations && CONFIG.organizations.primary && CONFIG.organizations.primary.name) || '';
+    tail.appendChild(txEl('footer', 'tx-footer', primaryOrgName ? I18N.t('print.footerOrg', { org: primaryOrgName }) : I18N.t('print.footer')));
+    root.appendChild(tail);
     return root;
   }
 
@@ -1829,6 +1883,13 @@
 
   function initDownloadPdf() {
     if (!dom.downloadPdfBtn) return; // safe no-op if the button isn't on the page
+
+    // Ctrl/Cmd+P or the browser's print menu: stage the SAME transcript, so no route to the printer ever
+    // produces the web page. (The button below stages it first; teardownStagedReport then prevents a second one.)
+    window.addEventListener('beforeprint', () => {
+      if (teardownStagedReport || !currentReport || !dom.results || dom.results.hidden) return;
+      stageReportForPrint(buildReportRoot(), I18N.t('print.docTitle', { code: currentReport.student.code }));
+    });
 
     dom.downloadPdfBtn.addEventListener('click', () => {
       if (!dom.results) return;
